@@ -33,18 +33,29 @@ export default defineConfig({
         ]
       },
       manifest: {
+        id: '/',
         name: 'LinkLocker',
         short_name: 'LinkLocker',
         description: 'Save links across devices and offline sessions',
         background_color: '#f7f3ec',
         display: 'standalone',
         start_url: '/',
+        scope: '/',
         theme_color: '#be6841',
         icons: [
           { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
           { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
           { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
-        ]
+        ],
+        share_target: {
+          action: '/share',
+          method: 'GET',
+          params: {
+            title: 'title',
+            text: 'text',
+            url: 'url'
+          }
+        }
       }
     })
   ]

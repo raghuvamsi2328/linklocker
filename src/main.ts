@@ -160,6 +160,30 @@ const clearFiltersBtn = document.querySelector<HTMLButtonElement>('#clear-filter
 const composerCard = document.querySelector<HTMLElement>('#composer-card')
 const filtersCard = document.querySelector<HTMLElement>('#filters-card')
 
+const pendingSharedPayload = (() => {
+  const params = new URLSearchParams(window.location.search)
+  const sharedUrl = params.get('url')?.trim() ?? ''
+  const sharedTitle = params.get('title')?.trim() ?? ''
+  const sharedText = params.get('text')?.trim() ?? ''
+
+  if (!sharedUrl && !sharedTitle && !sharedText) {
+    return null
+  }
+
+  if (window.location.pathname === '/share') {
+    window.history.replaceState({}, '', '/')
+  } else {
+    const cleanedUrl = `${window.location.pathname}${window.location.hash || ''}`
+    window.history.replaceState({}, '', cleanedUrl)
+  }
+
+  return {
+    url: sharedUrl,
+    title: sharedTitle || sharedText,
+    text: sharedText
+  }
+})()
+
 if (
   !syncStatusEl ||
   !authPanel ||
@@ -231,6 +255,30 @@ const syncMobileCardsForViewport = () => {
     const toggle = card.querySelector<HTMLButtonElement>('[data-card-toggle]')
     const isExpanded = toggle?.getAttribute('aria-expanded') === 'true'
     setMobileCardExpanded(card, isExpanded)
+  }
+}
+
+const applyPendingSharedPayload = () => {
+  if (!pendingSharedPayload) {
+    return
+  }
+
+  if (pendingSharedPayload.url) {
+    urlInput.value = pendingSharedPayload.url
+  }
+
+  if (pendingSharedPayload.title) {
+    titleInput.value = pendingSharedPayload.title
+  }
+
+  if (pendingSharedPayload.text && !pendingSharedPayload.title) {
+    titleInput.value = pendingSharedPayload.text.slice(0, 120)
+  }
+
+  saveMessage.textContent = 'Shared link received. Add optional group/tags and tap Save Link.'
+
+  if (mobileMedia.matches) {
+    setMobileCardExpanded(composerCard, true)
   }
 }
 
@@ -681,6 +729,7 @@ window.addEventListener('online', () => {
 if (session) {
   setAuthUi(true)
   syncMobileCardsForViewport()
+  applyPendingSharedPayload()
   void (async () => {
     try {
       await loadServerLinks()
@@ -702,6 +751,9 @@ if (session) {
 } else {
   setAuthUi(false)
   syncMobileCardsForViewport()
+  if (pendingSharedPayload) {
+    authMessage.textContent = 'Please login to save the shared link.'
+  }
 }
 
 window.addEventListener('beforeunload', () => {
