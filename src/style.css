@@ -303,6 +303,11 @@ button.secondary {
   margin-bottom: 0.6rem;
 }
 
+.install-btn {
+  background: #e1f0ff;
+  color: #214a72;
+}
+
 .pin-grid {
   columns: 1;
   column-gap: 0.6rem;

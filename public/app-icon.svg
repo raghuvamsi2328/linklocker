@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="LinkLocker icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#be6841"/>
+      <stop offset="100%" stop-color="#7d3f24"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="110" fill="url(#bg)"/>
+  <circle cx="196" cy="214" r="76" fill="none" stroke="#fff8ef" stroke-width="34"/>
+  <circle cx="318" cy="298" r="76" fill="none" stroke="#fff8ef" stroke-width="34"/>
+  <path d="M230 248l52 24" stroke="#fff8ef" stroke-width="34" stroke-linecap="round"/>
+</svg>

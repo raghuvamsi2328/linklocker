@@ -33,6 +33,11 @@ type GroupedRows = {
   items: LinkRow[]
 }
 
+type InstallPromptEvent = Event & {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
+}
+
 const app = document.querySelector<HTMLDivElement>('#app')
 
 if (!app) {
@@ -58,12 +63,13 @@ let serverLinks: ServerLink[] = []
 let cleanupStatus: (() => void) | null = null
 const mobileMedia = window.matchMedia('(max-width: 759px)')
 const bucketOpenState = new Map<string, boolean>()
+let deferredInstallPrompt: InstallPromptEvent | null = null
 
 app.innerHTML = `
   <main class="page-shell">
     <section class="landing" id="auth-panel">
       <div class="landing-copy">
-        <p class="eyebrow">LINK SAVER</p>
+        <p class="eyebrow">LINKLOCKER</p>
         <h1>Save now, sort later.</h1>
         <p class="subtitle">Notion calm + Pinterest flow. Keep links grouped, tagged, and ready offline.</p>
       </div>
@@ -90,6 +96,7 @@ app.innerHTML = `
         </div>
         <div class="row">
           <div id="sync-status" class="status-pill">Checking sync state...</div>
+          <button id="install-btn" type="button" class="secondary install-btn" hidden>Install App</button>
           <button id="logout-btn" type="button" class="secondary">Logout</button>
         </div>
       </header>
@@ -137,6 +144,7 @@ const authForm = document.querySelector<HTMLFormElement>('#auth-form')
 const loginBtn = document.querySelector<HTMLButtonElement>('#login-btn')
 const registerBtn = document.querySelector<HTMLButtonElement>('#register-btn')
 const authMessage = document.querySelector<HTMLElement>('#auth-message')
+const installBtn = document.querySelector<HTMLButtonElement>('#install-btn')
 const logoutBtn = document.querySelector<HTMLButtonElement>('#logout-btn')
 const linkForm = document.querySelector<HTMLFormElement>('#link-form')
 const saveMessage = document.querySelector<HTMLElement>('#save-message')
@@ -160,6 +168,7 @@ if (
   !loginBtn ||
   !registerBtn ||
   !authMessage ||
+  !installBtn ||
   !logoutBtn ||
   !linkForm ||
   !saveMessage ||
@@ -554,6 +563,31 @@ linkBoard.addEventListener('click', (event) => {
 
 registerBtn.addEventListener('click', async () => {
   await runAuth('register')
+})
+
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault()
+  deferredInstallPrompt = event as InstallPromptEvent
+  installBtn.hidden = false
+})
+
+installBtn.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) {
+    return
+  }
+
+  await deferredInstallPrompt.prompt()
+  const choice = await deferredInstallPrompt.userChoice
+  if (choice.outcome === 'accepted') {
+    installBtn.hidden = true
+  }
+
+  deferredInstallPrompt = null
+})
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null
+  installBtn.hidden = true
 })
 
 logoutBtn.addEventListener('click', () => {

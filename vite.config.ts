@@ -13,6 +13,7 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: 'autoUpdate',
+      includeAssets: ['apple-touch-icon.png', 'vite.svg'],
       workbox: {
         runtimeCaching: [
           {
@@ -32,16 +33,17 @@ export default defineConfig({
         ]
       },
       manifest: {
-        name: 'LinkKeeper',
-        short_name: 'Links',
+        name: 'LinkLocker',
+        short_name: 'LinkLocker',
         description: 'Save links across devices and offline sessions',
-        background_color: '#ffffff',
+        background_color: '#f7f3ec',
         display: 'standalone',
         start_url: '/',
-        theme_color: '#ffffff',
+        theme_color: '#be6841',
         icons: [
-          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' }
+          { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
       }
     })
