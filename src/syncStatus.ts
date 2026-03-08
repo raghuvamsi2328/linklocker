@@ -1,9 +1,19 @@
 import { getUnsyncedCount } from './db'
 
-export function attachSyncStatus(element: HTMLElement): () => void {
+type SyncStatusOptions = {
+  isLocalOnlyMode?: () => boolean
+}
+
+export function attachSyncStatus(element: HTMLElement, options: SyncStatusOptions = {}): () => void {
   let timerId: number | undefined
 
   const refresh = async () => {
+    if (options.isLocalOnlyMode?.()) {
+      element.textContent = 'Offline mode - Local only'
+      element.dataset.status = 'offline'
+      return
+    }
+
     let unsyncedCount = 0
 
     try {

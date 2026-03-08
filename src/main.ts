@@ -1,37 +1,35 @@
 import './style.css'
 import { registerSW } from 'virtual:pwa-register'
-import { addLocalLink, getLocalLinks, getUnsyncedLinks, markLinkSynced, type LocalLink } from './db'
+import { addLocalLink, getLocalLinks, markLinkSynced, type LocalLink } from './db'
 import { attachSyncStatus } from './syncStatus'
-
-type Session = {
-  token: string
-  username: string
-}
-
-type ServerLink = {
-  id: number
-  user_id: number
-  url: string
-  title: string
-  group_name: string | null
-  tags: string[]
-  created_at: string
-  synced_at: string
-}
-
-type LinkRow = {
-  label: string
-  url: string
-  pending: boolean
-  createdAt: string
-  group: string
-  tags: string[]
-}
-
-type GroupedRows = {
-  key: string
-  items: LinkRow[]
-}
+import {
+  authenticateWithCredentials,
+  createServerLinkForSession,
+  fetchServerLinksForSession,
+  syncPendingLinksForSession,
+  type ServerLink
+} from './features/authSync'
+import { applyGroupFilterOptions, buildLinkRows, renderBoardHtml } from './features/board'
+import {
+  detectMetadata,
+  deriveFallbackTitle,
+  isUrlLike,
+  parseSharedPayloadFromLocation,
+  toValidUrl
+} from './features/linkMetadata'
+import {
+  clearStoredSession,
+  getStoredOfflineMode,
+  getStoredSession,
+  setStoredOfflineMode,
+  storeSession,
+  type AppSession
+} from './features/sessionMode'
+import {
+  applyPendingSharedPayloadToForm,
+  setMobileCardExpanded,
+  syncMobileCardsForViewport
+} from './features/uiState'
 
 type InstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -44,26 +42,24 @@ if (!app) {
   throw new Error('Missing #app root element')
 }
 
-registerSW({
-  immediate: true
-})
+registerSW({ immediate: true })
 
-const storedToken = localStorage.getItem('token')
-const storedUsername = localStorage.getItem('username') ?? localStorage.getItem('email')
-
-let session: Session | null =
-  storedToken && storedUsername
-    ? {
-        token: storedToken,
-        username: storedUsername
-      }
-    : null
-
+let session: AppSession | null = getStoredSession()
+let offlineOnlyMode = getStoredOfflineMode()
 let serverLinks: ServerLink[] = []
 let cleanupStatus: (() => void) | null = null
 const mobileMedia = window.matchMedia('(max-width: 759px)')
 const bucketOpenState = new Map<string, boolean>()
 let deferredInstallPrompt: InstallPromptEvent | null = null
+let latestMetadata:
+  | {
+      url: string
+      description: string
+      image: string
+      favicon: string
+      siteName: string
+    }
+  | null = null
 
 app.innerHTML = `
   <main class="page-shell">
@@ -83,6 +79,7 @@ app.innerHTML = `
             <button id="login-btn" data-mode="login" type="submit">Login</button>
             <button data-mode="register" type="button" id="register-btn" class="secondary">Register</button>
           </div>
+          <button id="offline-mode-btn" type="button" class="secondary">Use Offline Mode (No Account)</button>
         </form>
         <p id="auth-message" class="muted"></p>
       </div>
@@ -96,6 +93,11 @@ app.innerHTML = `
         </div>
         <div class="row">
           <div id="sync-status" class="status-pill">Checking sync state...</div>
+          <label for="mode-switch" class="mode-switch-label">Mode</label>
+          <select id="mode-switch" class="mode-switch" aria-label="App mode">
+            <option value="account">Account Sync</option>
+            <option value="offline">Offline Local</option>
+          </select>
           <button id="install-btn" type="button" class="secondary install-btn" hidden>Install App</button>
           <button id="logout-btn" type="button" class="secondary">Logout</button>
         </div>
@@ -109,6 +111,7 @@ app.innerHTML = `
             <input id="link-title" type="text" placeholder="Title (optional)" />
             <input id="link-group" type="text" placeholder="Group (optional, ex: Work)" />
             <input id="link-tags" type="text" placeholder="Tags (optional, comma separated)" />
+            <button id="metadata-btn" type="button" class="secondary">Auto Fill Metadata</button>
             <button type="submit">Save Link</button>
           </form>
           <p id="save-message" class="muted"></p>
@@ -143,7 +146,9 @@ const appPanel = document.querySelector<HTMLElement>('#app-panel')
 const authForm = document.querySelector<HTMLFormElement>('#auth-form')
 const loginBtn = document.querySelector<HTMLButtonElement>('#login-btn')
 const registerBtn = document.querySelector<HTMLButtonElement>('#register-btn')
+const offlineModeBtn = document.querySelector<HTMLButtonElement>('#offline-mode-btn')
 const authMessage = document.querySelector<HTMLElement>('#auth-message')
+const modeSwitch = document.querySelector<HTMLSelectElement>('#mode-switch')
 const installBtn = document.querySelector<HTMLButtonElement>('#install-btn')
 const logoutBtn = document.querySelector<HTMLButtonElement>('#logout-btn')
 const linkForm = document.querySelector<HTMLFormElement>('#link-form')
@@ -153,36 +158,13 @@ const urlInput = document.querySelector<HTMLInputElement>('#link-url')
 const titleInput = document.querySelector<HTMLInputElement>('#link-title')
 const groupInput = document.querySelector<HTMLInputElement>('#link-group')
 const tagsInput = document.querySelector<HTMLInputElement>('#link-tags')
+const metadataBtn = document.querySelector<HTMLButtonElement>('#metadata-btn')
 const viewModeSelect = document.querySelector<HTMLSelectElement>('#view-mode')
 const groupFilter = document.querySelector<HTMLSelectElement>('#filter-group')
 const tagFilter = document.querySelector<HTMLInputElement>('#filter-tag')
 const clearFiltersBtn = document.querySelector<HTMLButtonElement>('#clear-filters')
 const composerCard = document.querySelector<HTMLElement>('#composer-card')
 const filtersCard = document.querySelector<HTMLElement>('#filters-card')
-
-const pendingSharedPayload = (() => {
-  const params = new URLSearchParams(window.location.search)
-  const sharedUrl = params.get('url')?.trim() ?? ''
-  const sharedTitle = params.get('title')?.trim() ?? ''
-  const sharedText = params.get('text')?.trim() ?? ''
-
-  if (!sharedUrl && !sharedTitle && !sharedText) {
-    return null
-  }
-
-  if (window.location.pathname === '/share') {
-    window.history.replaceState({}, '', '/')
-  } else {
-    const cleanedUrl = `${window.location.pathname}${window.location.hash || ''}`
-    window.history.replaceState({}, '', cleanedUrl)
-  }
-
-  return {
-    url: sharedUrl,
-    title: sharedTitle || sharedText,
-    text: sharedText
-  }
-})()
 
 if (
   !syncStatusEl ||
@@ -191,7 +173,9 @@ if (
   !authForm ||
   !loginBtn ||
   !registerBtn ||
+  !offlineModeBtn ||
   !authMessage ||
+  !modeSwitch ||
   !installBtn ||
   !logoutBtn ||
   !linkForm ||
@@ -201,6 +185,7 @@ if (
   !titleInput ||
   !groupInput ||
   !tagsInput ||
+  !metadataBtn ||
   !viewModeSelect ||
   !groupFilter ||
   !tagFilter ||
@@ -211,15 +196,18 @@ if (
   throw new Error('Missing expected UI elements')
 }
 
-cleanupStatus = attachSyncStatus(syncStatusEl)
+const pendingSharedPayload = parseSharedPayloadFromLocation(window.location, window.history)
+const mobileCards = [composerCard, filtersCard]
+
+cleanupStatus = attachSyncStatus(syncStatusEl, {
+  isLocalOnlyMode: () => offlineOnlyMode
+})
 
 const setAuthUi = (loggedIn: boolean) => {
   authPanel.hidden = loggedIn
   appPanel.hidden = !loggedIn
   authPanel.setAttribute('aria-hidden', String(loggedIn))
   appPanel.setAttribute('aria-hidden', String(!loggedIn))
-
-  // Force visibility in case any CSS or browser quirk ignores hidden toggling.
   authPanel.style.display = loggedIn ? 'none' : 'grid'
   appPanel.style.display = loggedIn ? 'block' : 'none'
 
@@ -229,86 +217,96 @@ const setAuthUi = (loggedIn: boolean) => {
   }
 }
 
-const setMobileCardExpanded = (card: HTMLElement, expanded: boolean) => {
-  const toggle = card.querySelector<HTMLButtonElement>('[data-card-toggle]')
-  const body = card.querySelector<HTMLElement>('[data-card-body]')
-
-  if (!toggle || !body) {
-    return
-  }
-
-  toggle.setAttribute('aria-expanded', String(expanded))
-  body.hidden = !expanded
-}
-
-const syncMobileCardsForViewport = () => {
-  const cards = [composerCard, filtersCard]
-
-  if (!mobileMedia.matches) {
-    for (const card of cards) {
-      setMobileCardExpanded(card, true)
-    }
-    return
-  }
-
-  for (const card of cards) {
-    const toggle = card.querySelector<HTMLButtonElement>('[data-card-toggle]')
-    const isExpanded = toggle?.getAttribute('aria-expanded') === 'true'
-    setMobileCardExpanded(card, isExpanded)
-  }
-}
-
-const applyPendingSharedPayload = () => {
-  if (!pendingSharedPayload) {
-    return
-  }
-
-  if (pendingSharedPayload.url) {
-    urlInput.value = pendingSharedPayload.url
-  }
-
-  if (pendingSharedPayload.title) {
-    titleInput.value = pendingSharedPayload.title
-  }
-
-  if (pendingSharedPayload.text && !pendingSharedPayload.title) {
-    titleInput.value = pendingSharedPayload.text.slice(0, 120)
-  }
-
-  saveMessage.textContent = 'Shared link received. Add optional group/tags and tap Save Link.'
-
-  if (mobileMedia.matches) {
-    setMobileCardExpanded(composerCard, true)
-  }
-}
-
-const saveSession = (newSession: Session) => {
-  session = newSession
-  localStorage.setItem('token', newSession.token)
-  localStorage.setItem('username', newSession.username)
-  localStorage.removeItem('email')
-}
-
 const clearSession = () => {
   session = null
-  localStorage.removeItem('token')
-  localStorage.removeItem('username')
-  localStorage.removeItem('email')
+  clearStoredSession()
   serverLinks = []
 }
 
-const authorizedFetch = async (input: string, init: RequestInit = {}) => {
-  if (!session) {
-    throw new Error('Not authenticated')
+const setOfflineMode = (enabled: boolean) => {
+  offlineOnlyMode = enabled
+  modeSwitch.value = enabled ? 'offline' : 'account'
+  setStoredOfflineMode(enabled)
+
+  if (enabled) {
+    if (session) {
+      clearSession()
+    }
+    serverLinks = []
+    logoutBtn.textContent = 'Exit Offline Mode'
+    authMessage.textContent = ''
+    return
   }
 
-  const headers = new Headers(init.headers)
-  headers.set('Authorization', `Bearer ${session.token}`)
+  logoutBtn.textContent = 'Logout'
+}
 
-  return fetch(input, {
-    ...init,
-    headers
+const saveSession = (newSession: AppSession) => {
+  setOfflineMode(false)
+  session = newSession
+  storeSession(newSession)
+}
+
+const renderLinks = async () => {
+  const localLinks = await getLocalLinks()
+  const rows = buildLinkRows(serverLinks, localLinks, offlineOnlyMode)
+  applyGroupFilterOptions(groupFilter, rows)
+
+  const selectedGroup = groupFilter.value
+  const tagNeedle = tagFilter.value.trim().toLowerCase()
+  const mode = viewModeSelect.value === 'tag' ? 'tag' : 'group'
+
+  linkBoard.innerHTML = renderBoardHtml(rows, selectedGroup, tagNeedle, mode, mobileMedia.matches, bucketOpenState)
+}
+
+const loadServerLinks = async () => {
+  if (!session || offlineOnlyMode) {
+    return
+  }
+
+  serverLinks = await fetchServerLinksForSession(session)
+}
+
+const syncPendingLinks = async () => {
+  if (!session || offlineOnlyMode) {
+    return
+  }
+
+  await syncPendingLinksForSession(session)
+  await loadServerLinks()
+  await renderLinks()
+}
+
+const activateOfflineMode = async () => {
+  setOfflineMode(true)
+  setAuthUi(true)
+  syncMobileCardsForViewport(mobileCards, mobileMedia)
+  applyPendingSharedPayloadToForm(pendingSharedPayload, {
+    urlInput,
+    titleInput,
+    saveMessage,
+    composerCard,
+    mobileMedia
   })
+  await renderLinks()
+  saveMessage.textContent = 'Offline mode enabled. Links stay on this device only.'
+}
+
+const activateAccountMode = async () => {
+  setOfflineMode(false)
+
+  if (!session) {
+    setAuthUi(false)
+    linkBoard.innerHTML = ''
+    saveMessage.textContent = ''
+    authMessage.textContent = 'Account Sync mode selected. Login or register to continue.'
+    return
+  }
+
+  setAuthUi(true)
+  await loadServerLinks()
+  await syncPendingLinks()
+  await renderLinks()
 }
 
 const parseTags = (value: string): string[] =>
@@ -317,224 +315,10 @@ const parseTags = (value: string): string[] =>
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean)
 
-const escapeHtml = (value: string): string =>
-  value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-
-const hydrateGroupFilter = (rows: LinkRow[]) => {
-  const currentGroup = groupFilter.value
-  const groups = [...new Set(rows.map((row) => row.group).filter(Boolean))].sort((a, b) => a.localeCompare(b))
-
-  groupFilter.innerHTML = '<option value="">All groups</option>'
-  for (const group of groups) {
-    const option = document.createElement('option')
-    option.value = group
-    option.textContent = group
-    groupFilter.append(option)
-  }
-
-  if (groups.includes(currentGroup)) {
-    groupFilter.value = currentGroup
-  } else {
-    groupFilter.value = ''
-  }
-}
-
-const groupRowsForBoard = (rows: LinkRow[], mode: 'group' | 'tag'): GroupedRows[] => {
-  const groupedMap = new Map<string, LinkRow[]>()
-
-  for (const row of rows) {
-    if (mode === 'group') {
-      const key = row.group || 'No Group'
-      groupedMap.set(key, [...(groupedMap.get(key) ?? []), row])
-      continue
-    }
-
-    const tags = row.tags.length > 0 ? row.tags : ['No Tag']
-    for (const tag of tags) {
-      groupedMap.set(tag, [...(groupedMap.get(tag) ?? []), row])
-    }
-  }
-
-  return [...groupedMap.entries()]
-    .map(([key, items]) => ({
-      key,
-      items: items.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    }))
-    .sort((a, b) => a.key.localeCompare(b.key))
-}
-
-const renderLinks = async () => {
-  const localLinks = await getLocalLinks()
-  const pendingLocalLinks = localLinks.filter((link) => !link.synced)
-
-  const rows: LinkRow[] = []
-
-  for (const link of serverLinks) {
-    rows.push({
-      label: link.title || link.url,
-      url: link.url,
-      pending: false,
-      createdAt: link.created_at,
-      group: link.group_name ?? '',
-      tags: link.tags ?? []
-    })
-  }
-
-  for (const link of pendingLocalLinks) {
-    rows.push({
-      label: link.title || link.url,
-      url: link.url,
-      pending: true,
-      createdAt: link.createdAt,
-      group: link.group,
-      tags: link.tags
-    })
-  }
-
-  hydrateGroupFilter(rows)
-
-  const selectedGroup = groupFilter.value
-  const tagNeedle = tagFilter.value.trim().toLowerCase()
-  const mode = viewModeSelect.value === 'tag' ? 'tag' : 'group'
-
-  const filteredRows = rows.filter((row) => {
-    const matchesGroup = !selectedGroup || row.group === selectedGroup
-    const matchesTag = !tagNeedle || row.tags.some((tag) => tag.includes(tagNeedle))
-    return matchesGroup && matchesTag
-  })
-
-  if (filteredRows.length === 0) {
-    linkBoard.innerHTML = '<p class="empty-state">It feels empty here.</p>'
-    return
-  }
-
-  const groups = groupRowsForBoard(filteredRows, mode)
-
-  linkBoard.innerHTML = groups
-    .map(
-      (grouped, index) => {
-        const bucketStateKey = `${mode}:${grouped.key}`
-        const expanded = mobileMedia.matches ? (bucketOpenState.get(bucketStateKey) ?? index === 0) : true
-        const encodedBucketKey = encodeURIComponent(bucketStateKey)
-
-        return `
-      <article class="bucket">
-        <header class="bucket-head">
-          <button type="button" class="bucket-toggle" data-bucket-toggle data-bucket-key="${encodedBucketKey}" aria-expanded="${expanded}">
-            <span>${escapeHtml(grouped.key)}</span>
-            <small>${grouped.items.length} item${grouped.items.length === 1 ? '' : 's'}</small>
-          </button>
-        </header>
-        <div class="pin-grid" ${expanded ? '' : 'hidden'}>
-          ${grouped.items
-            .map(
-              (row) => `
-              <a class="pin ${row.pending ? 'pending' : ''}" href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">
-                <p class="pin-title">${escapeHtml(row.label)}</p>
-                <p class="pin-url">${escapeHtml(row.url)}</p>
-                <div class="pin-meta">
-                  ${row.group ? `<span>${escapeHtml(row.group)}</span>` : ''}
-                  ${row.tags.map((tag) => `<span>#${escapeHtml(tag)}</span>`).join('')}
-                </div>
-                <small>${row.pending ? 'Pending sync' : 'Synced'}</small>
-              </a>
-            `
-            )
-            .join('')}
-        </div>
-      </article>
-    `
-      }
-    )
-    .join('')
-}
-
-const loadServerLinks = async () => {
-  if (!session) {
-    return
-  }
-
-  const response = await authorizedFetch('/api/links')
-  if (response.status === 401) {
-    throw new Error('AUTH_EXPIRED')
-  }
-
-  if (!response.ok) {
-    throw new Error('Failed to fetch links')
-  }
-
-  const payload = (await response.json()) as { links: ServerLink[] }
-  serverLinks = payload.links
-}
-
-const syncPendingLinks = async () => {
-  if (!session) {
-    return
-  }
-
-  const pending = await getUnsyncedLinks()
-  if (pending.length === 0) {
-    return
-  }
-
-  for (const link of pending) {
-    const response = await authorizedFetch('/api/links', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        url: link.url,
-        title: link.title,
-        group: link.group,
-        tags: link.tags
-      })
-    }).catch(() => null)
-
-    if (!response || !response.ok) {
-      continue
-    }
-
-    const payload = (await response.json()) as { link: ServerLink }
-    await markLinkSynced(link.id, payload.link.id)
-  }
-
-  await loadServerLinks()
-  await renderLinks()
-}
-
-const authenticate = async (mode: 'login' | 'register') => {
-  const username = (document.querySelector<HTMLInputElement>('#username')?.value ?? '').trim().toLowerCase()
-  const password = document.querySelector<HTMLInputElement>('#password')?.value ?? ''
-
-  const response = await fetch(`/api/auth/${mode}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ username, password })
-  })
-
-  const payload = (await response.json()) as { token?: string; user?: { username: string }; error?: string }
-
-  if (!response.ok || !payload.token || !payload.user) {
-    throw new Error(payload.error ?? `${mode} failed`)
-  }
-
-  saveSession({
-    token: payload.token,
-    username: payload.user.username
-  })
-}
-
 const setAuthPending = (isPending: boolean) => {
   loginBtn.disabled = isPending
   registerBtn.disabled = isPending
+  offlineModeBtn.disabled = isPending
   loginBtn.textContent = isPending ? 'Signing in...' : 'Login'
 }
 
@@ -543,7 +327,11 @@ const runAuth = async (mode: 'login' | 'register') => {
   authMessage.textContent = ''
 
   try {
-    await authenticate(mode)
+    const username = (document.querySelector<HTMLInputElement>('#username')?.value ?? '').trim().toLowerCase()
+    const password = document.querySelector<HTMLInputElement>('#password')?.value ?? ''
+    const newSession = await authenticateWithCredentials(mode, username, password)
+
+    saveSession(newSession)
     setAuthUi(true)
     await loadServerLinks()
     await syncPendingLinks()
@@ -558,7 +346,6 @@ const runAuth = async (mode: 'login' | 'register') => {
 
 authForm.addEventListener('submit', async (event) => {
   event.preventDefault()
-
   await runAuth('login')
 })
 
@@ -572,7 +359,29 @@ loginBtn.addEventListener('click', async (event) => {
   await runAuth('login')
 })
 
-for (const card of [composerCard, filtersCard]) {
+registerBtn.addEventListener('click', async () => {
+  await runAuth('register')
+})
+
+offlineModeBtn.addEventListener('click', async () => {
+  await activateOfflineMode()
+})
+
+modeSwitch.addEventListener('change', () => {
+  void (async () => {
+    try {
+      if (modeSwitch.value === 'offline') {
+        await activateOfflineMode()
+      } else {
+        await activateAccountMode()
+      }
+    } catch {
+      saveMessage.textContent = 'Unable to switch mode right now. Please retry.'
+    }
+  })()
+})
+
+for (const card of mobileCards) {
   const toggle = card.querySelector<HTMLButtonElement>('[data-card-toggle]')
 
   toggle?.addEventListener('click', () => {
@@ -586,7 +395,7 @@ for (const card of [composerCard, filtersCard]) {
 }
 
 mobileMedia.addEventListener('change', () => {
-  syncMobileCardsForViewport()
+  syncMobileCardsForViewport(mobileCards, mobileMedia)
   void renderLinks()
 })
 
@@ -609,8 +418,144 @@ linkBoard.addEventListener('click', (event) => {
   void renderLinks()
 })
 
-registerBtn.addEventListener('click', async () => {
-  await runAuth('register')
+metadataBtn.addEventListener('click', async () => {
+  const parsedUrl = toValidUrl(urlInput.value.trim())
+
+  if (!parsedUrl) {
+    saveMessage.textContent = 'Enter a valid URL first to fetch metadata.'
+    return
+  }
+
+  metadataBtn.disabled = true
+  metadataBtn.textContent = 'Fetching metadata...'
+
+  try {
+    const metadata = await detectMetadata(parsedUrl)
+    latestMetadata = {
+      url: parsedUrl,
+      description: metadata.description,
+      image: metadata.image,
+      favicon: metadata.favicon,
+      siteName: metadata.siteName
+    }
+
+    if (metadata.title && (!titleInput.value.trim() || isUrlLike(titleInput.value.trim()))) {
+      titleInput.value = metadata.title
+    }
+
+    const existingTags = parseTags(tagsInput.value)
+    const mergedTags = [...new Set([...existingTags, ...metadata.tags])]
+    tagsInput.value = mergedTags.join(', ')
+
+    const extraBits = [
+      metadata.siteName ? `site: ${metadata.siteName}` : '',
+      metadata.description ? 'description found' : '',
+      metadata.image ? 'image found' : '',
+      metadata.favicon ? 'favicon found' : ''
+    ].filter(Boolean)
+
+    saveMessage.textContent = metadata.title
+      ? `Metadata applied${extraBits.length ? ` (${extraBits.join(', ')})` : ''}. You can edit title/tags before saving.`
+      : 'No rich metadata found. Added best-effort tags from domain.'
+  } finally {
+    metadataBtn.disabled = false
+    metadataBtn.textContent = 'Auto Fill Metadata'
+  }
+})
+
+urlInput.addEventListener('blur', () => {
+  if (titleInput.value.trim()) {
+    return
+  }
+
+  const url = toValidUrl(urlInput.value)
+  if (!url) {
+    return
+  }
+
+  titleInput.value = deriveFallbackTitle(url)
+})
+
+urlInput.addEventListener('input', () => {
+  const parsedUrl = toValidUrl(urlInput.value.trim())
+  if (!latestMetadata || !parsedUrl || latestMetadata.url !== parsedUrl) {
+    latestMetadata = null
+  }
+})
+
+linkForm.addEventListener('submit', async (event) => {
+  event.preventDefault()
+
+  if (!session && !offlineOnlyMode) {
+    saveMessage.textContent = 'Please login first'
+    return
+  }
+
+  const url = toValidUrl(urlInput.value.trim())
+  const title = titleInput.value.trim()
+  const group = groupInput.value.trim()
+  const tags = parseTags(tagsInput.value)
+
+  if (!url) {
+    saveMessage.textContent = 'URL is required'
+    return
+  }
+
+  let localLink: LocalLink
+  try {
+    const metadataForSave = latestMetadata && latestMetadata.url === url ? latestMetadata : null
+    localLink = await addLocalLink(url, title, group, tags, {
+      synced: offlineOnlyMode,
+      localOnly: offlineOnlyMode,
+      description: metadataForSave?.description,
+      image: metadataForSave?.image,
+      favicon: metadataForSave?.favicon,
+      siteName: metadataForSave?.siteName
+    })
+  } catch {
+    saveMessage.textContent = 'Unable to store locally'
+    return
+  }
+
+  await renderLinks()
+  urlInput.value = ''
+  titleInput.value = ''
+  groupInput.value = ''
+  tagsInput.value = ''
+
+  if (offlineOnlyMode) {
+    saveMessage.textContent = 'Saved locally in offline mode.'
+    await renderLinks()
+    return
+  }
+
+  try {
+    if (!session) {
+      throw new Error('Not authenticated')
+    }
+
+    const created = await createServerLinkForSession(session, {
+      url,
+      title,
+      group,
+      tags,
+      description: localLink.description,
+      image: localLink.image,
+      favicon: localLink.favicon,
+      siteName: localLink.siteName
+    })
+
+    await markLinkSynced(localLink.id, created.id)
+    await loadServerLinks()
+    saveMessage.textContent = 'Link saved and synced'
+  } catch {
+    saveMessage.textContent = navigator.onLine
+      ? 'Save queued. Sync will retry in background.'
+      : 'Offline - link stored locally and queued for sync.'
+  }
+
+  await renderLinks()
+  void syncPendingLinks()
 })
 
 window.addEventListener('beforeinstallprompt', (event) => {
@@ -639,6 +584,11 @@ window.addEventListener('appinstalled', () => {
 })
 
 logoutBtn.addEventListener('click', () => {
+  if (offlineOnlyMode) {
+    void activateAccountMode()
+    return
+  }
+
   clearSession()
   setAuthUi(false)
   linkBoard.innerHTML = ''
@@ -663,77 +613,31 @@ clearFiltersBtn.addEventListener('click', () => {
   void renderLinks()
 })
 
-linkForm.addEventListener('submit', async (event) => {
-  event.preventDefault()
-
-  if (!session) {
-    saveMessage.textContent = 'Please login first'
-    return
-  }
-
-  const url = urlInput.value.trim()
-  const title = titleInput.value.trim()
-  const group = groupInput.value.trim()
-  const tags = parseTags(tagsInput.value)
-
-  if (!url) {
-    saveMessage.textContent = 'URL is required'
-    return
-  }
-
-  let localLink: LocalLink
-  try {
-    localLink = await addLocalLink(url, title, group, tags)
-  } catch {
-    saveMessage.textContent = 'Unable to store locally'
-    return
-  }
-
-  await renderLinks()
-  urlInput.value = ''
-  titleInput.value = ''
-  groupInput.value = ''
-  tagsInput.value = ''
-
-  try {
-    const response = await authorizedFetch('/api/links', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ url, title, group, tags })
-    })
-
-    if (!response.ok) {
-      throw new Error('Server rejected save')
-    }
-
-    const payload = (await response.json()) as { link: ServerLink }
-    await markLinkSynced(localLink.id, payload.link.id)
-    await loadServerLinks()
-    saveMessage.textContent = 'Link saved and synced'
-  } catch {
-    saveMessage.textContent = navigator.onLine
-      ? 'Save queued. Sync will retry in background.'
-      : 'Offline - link stored locally and queued for sync.'
-  }
-
-  await renderLinks()
-  void syncPendingLinks()
-})
-
 window.addEventListener('online', () => {
   void syncPendingLinks()
 })
 
-if (session) {
+if (session || offlineOnlyMode) {
   setAuthUi(true)
-  syncMobileCardsForViewport()
-  applyPendingSharedPayload()
+  modeSwitch.value = offlineOnlyMode ? 'offline' : 'account'
+  if (offlineOnlyMode) {
+    logoutBtn.textContent = 'Exit Offline Mode'
+  }
+  syncMobileCardsForViewport(mobileCards, mobileMedia)
+  applyPendingSharedPayloadToForm(pendingSharedPayload, {
+    urlInput,
+    titleInput,
+    saveMessage,
+    composerCard,
+    mobileMedia
+  })
+
   void (async () => {
     try {
-      await loadServerLinks()
-      await syncPendingLinks()
+      if (!offlineOnlyMode) {
+        await loadServerLinks()
+        await syncPendingLinks()
+      }
       await renderLinks()
     } catch (error) {
       if (error instanceof Error && error.message === 'AUTH_EXPIRED') {
@@ -743,16 +647,17 @@ if (session) {
         return
       }
 
-      // Keep session on transient errors (offline/server down) so refresh does not force logout.
       authMessage.textContent = 'Could not refresh data right now. Please try again.'
       await renderLinks()
     }
   })()
 } else {
   setAuthUi(false)
-  syncMobileCardsForViewport()
+  modeSwitch.value = 'account'
+  syncMobileCardsForViewport(mobileCards, mobileMedia)
+
   if (pendingSharedPayload) {
-    authMessage.textContent = 'Please login to save the shared link.'
+    authMessage.textContent = 'Login/register or use Offline Mode to save the shared link.'
   }
 }
 

@@ -42,6 +42,97 @@ function normalizeTags(value) {
   return [];
 }
 
+function decodeHtmlEntities(value) {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+}
+
+function stripHtml(value) {
+  return value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function resolveAbsoluteUrl(baseUrl, maybeRelative) {
+  if (!maybeRelative) {
+    return '';
+  }
+
+  try {
+    return new URL(maybeRelative, baseUrl).toString();
+  } catch {
+    return '';
+  }
+}
+
+function extractMetaContent(html, matcher) {
+  const match = html.match(matcher);
+  if (!match || !match[1]) {
+    return '';
+  }
+
+  return decodeHtmlEntities(stripHtml(match[1]));
+}
+
+async function fetchRichMetadata(url) {
+  const response = await fetch(url, {
+    redirect: 'follow',
+    headers: {
+      'User-Agent': 'LinkLockerBot/1.0 (+metadata-fetch)'
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`metadata fetch failed (${response.status})`);
+  }
+
+  const finalUrl = response.url || url;
+  const contentType = String(response.headers.get('content-type') ?? '').toLowerCase();
+  if (!contentType.includes('text/html')) {
+    return {
+      title: '',
+      description: '',
+      image: '',
+      favicon: resolveAbsoluteUrl(finalUrl, '/favicon.ico'),
+      siteName: new URL(finalUrl).hostname.replace(/^www\./i, '')
+    };
+  }
+
+  const html = await response.text();
+
+  const ogTitle = extractMetaContent(html, /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+  const twitterTitle = extractMetaContent(html, /<meta[^>]+name=["']twitter:title["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+  const plainTitle = extractMetaContent(html, /<title[^>]*>([^<]+)<\/title>/i);
+
+  const description =
+    extractMetaContent(html, /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["'][^>]*>/i) ||
+    extractMetaContent(html, /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["'][^>]*>/i) ||
+    extractMetaContent(html, /<meta[^>]+name=["']twitter:description["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+
+  const imageRaw =
+    extractMetaContent(html, /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*>/i) ||
+    extractMetaContent(html, /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["'][^>]*>/i);
+
+  const faviconRaw =
+    extractMetaContent(html, /<link[^>]+rel=["'][^"']*icon[^"']*["'][^>]+href=["']([^"']+)["'][^>]*>/i) ||
+    '/favicon.ico';
+
+  const siteName =
+    extractMetaContent(html, /<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["'][^>]*>/i) ||
+    new URL(finalUrl).hostname.replace(/^www\./i, '');
+
+  return {
+    title: ogTitle || twitterTitle || plainTitle,
+    description,
+    image: resolveAbsoluteUrl(finalUrl, imageRaw),
+    favicon: resolveAbsoluteUrl(finalUrl, faviconRaw),
+    siteName
+  };
+}
+
 function createToken(user) {
   return jwt.sign(
     {
@@ -77,6 +168,42 @@ function authRequired(req, res, next) {
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
+});
+
+app.get('/api/metadata', async (req, res) => {
+  const rawUrl = normalizeOptionalText(req.query.url);
+
+  if (!rawUrl) {
+    res.status(400).json({ error: 'url query is required' });
+    return;
+  }
+
+  let parsed;
+
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    res.status(400).json({ error: 'url must be a valid absolute URL' });
+    return;
+  }
+
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    res.status(400).json({ error: 'url protocol must be http or https' });
+    return;
+  }
+
+  try {
+    const metadata = await fetchRichMetadata(parsed.toString());
+    res.json(metadata);
+  } catch {
+    res.status(502).json({
+      title: '',
+      description: '',
+      image: '',
+      favicon: '',
+      siteName: parsed.hostname.replace(/^www\./i, '')
+    });
+  }
 });
 
 app.post('/api/auth/register', async (req, res) => {
@@ -159,7 +286,7 @@ app.get('/api/links', authRequired, (req, res) => {
 });
 
 app.post('/api/links', authRequired, (req, res) => {
-  const { url, title, group, tags } = req.body ?? {};
+  const { url, title, description, image, favicon, siteName, group, tags } = req.body ?? {};
 
   if (typeof url !== 'string' || !url.trim()) {
     res.status(400).json({ error: 'url is required' });
@@ -179,6 +306,10 @@ app.post('/api/links', authRequired, (req, res) => {
   const link = createLink(req.user.id, {
     url: url.trim(),
     title: normalizeOptionalText(title),
+    description: normalizeOptionalText(description),
+    image: normalizeOptionalText(image),
+    favicon: normalizeOptionalText(favicon),
+    siteName: normalizeOptionalText(siteName),
     groupName: normalizedGroup,
     tags: normalizedTags
   });

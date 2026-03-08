@@ -303,6 +303,18 @@ button.secondary {
   margin-bottom: 0.6rem;
 }
 
+.mode-switch-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.mode-switch {
+  width: auto;
+  min-width: 150px;
+  background: #fff6eb;
+  border-color: #dfc8ac;
+}
+
 .install-btn {
   background: #e1f0ff;
   color: #214a72;

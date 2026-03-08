@@ -27,6 +27,22 @@ function ensureLinksColumns() {
   if (!hasColumn('links', 'tags')) {
     db.exec('ALTER TABLE links ADD COLUMN tags TEXT;');
   }
+
+  if (!hasColumn('links', 'description')) {
+    db.exec('ALTER TABLE links ADD COLUMN description TEXT;');
+  }
+
+  if (!hasColumn('links', 'image')) {
+    db.exec('ALTER TABLE links ADD COLUMN image TEXT;');
+  }
+
+  if (!hasColumn('links', 'favicon')) {
+    db.exec('ALTER TABLE links ADD COLUMN favicon TEXT;');
+  }
+
+  if (!hasColumn('links', 'site_name')) {
+    db.exec('ALTER TABLE links ADD COLUMN site_name TEXT;');
+  }
 }
 
 function saveDatabase() {
@@ -99,15 +115,26 @@ export function createUser(username, passwordHash) {
   return user;
 }
 
-export function createLink(userId, { url, title, groupName, tags }) {
+export function createLink(userId, { url, title, description, image, favicon, siteName, groupName, tags }) {
   const statement = db.prepare(
-    'INSERT INTO links (user_id, url, title, group_name, tags, synced_at) VALUES (?, ?, ?, ?, ?, ?);'
+    'INSERT INTO links (user_id, url, title, description, image, favicon, site_name, group_name, tags, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);'
   );
-  statement.run([userId, url, title ?? null, groupName ?? null, JSON.stringify(tags), new Date().toISOString()]);
+  statement.run([
+    userId,
+    url,
+    title ?? null,
+    description ?? null,
+    image ?? null,
+    favicon ?? null,
+    siteName ?? null,
+    groupName ?? null,
+    JSON.stringify(tags),
+    new Date().toISOString()
+  ]);
   statement.free();
 
   const link = singleRow(
-    'SELECT id, user_id, url, title, group_name, tags, created_at, synced_at FROM links WHERE rowid = last_insert_rowid();'
+    'SELECT id, user_id, url, title, description, image, favicon, site_name, group_name, tags, created_at, synced_at FROM links WHERE rowid = last_insert_rowid();'
   );
 
   link.tags = JSON.parse(link.tags ?? '[]');
@@ -131,7 +158,7 @@ export function getLinksForUser(userId, filters = {}) {
   }
 
   const rows = listRows(
-    `SELECT id, user_id, url, title, group_name, tags, created_at, synced_at FROM links WHERE ${where.join(
+    `SELECT id, user_id, url, title, description, image, favicon, site_name, group_name, tags, created_at, synced_at FROM links WHERE ${where.join(
       ' AND '
     )} ORDER BY id DESC;`,
     params

@@ -4,10 +4,15 @@ export type LocalLink = {
   id: string
   url: string
   title: string
+  description?: string
+  image?: string
+  favicon?: string
+  siteName?: string
   group: string
   tags: string[]
   createdAt: string
   synced: boolean
+  localOnly?: boolean
   serverId?: number
 }
 
@@ -32,15 +37,35 @@ const dbPromise = openDB<LinkSaverDB>('link-saver-db', 2, {
   }
 })
 
-export async function addLocalLink(url: string, title: string, group: string, tags: string[]): Promise<LocalLink> {
+export async function addLocalLink(
+  url: string,
+  title: string,
+  group: string,
+  tags: string[],
+  options: {
+    synced?: boolean
+    localOnly?: boolean
+    description?: string
+    image?: string
+    favicon?: string
+    siteName?: string
+  } = {}
+): Promise<LocalLink> {
+  const synced = options.synced ?? false
+
   const link: LocalLink = {
     id: crypto.randomUUID(),
     url,
     title,
+    description: options.description,
+    image: options.image,
+    favicon: options.favicon,
+    siteName: options.siteName,
     group,
     tags,
     createdAt: new Date().toISOString(),
-    synced: false
+    synced,
+    localOnly: options.localOnly ?? false
   }
 
   const db = await dbPromise
