@@ -1,5 +1,9 @@
 import './style.css'
+import './styles/login.css'
+import './styles/app.css'
 import { registerSW } from 'virtual:pwa-register'
+import { renderLoginPageHtml } from './pages/LoginPage'
+import { renderAppPageHtml } from './pages/AppPage'
 import { addLocalLink, getLocalLinks, markLinkSynced, type LocalLink } from './db'
 import { attachSyncStatus } from './syncStatus'
 import {
@@ -9,7 +13,7 @@ import {
   syncPendingLinksForSession,
   type ServerLink
 } from './features/authSync'
-import { applyGroupFilterOptions, buildLinkRows, renderBoardHtml } from './features/board'
+import { applyGroupFilterOptions, buildLinkRows, renderBoardHtml, type LinkRow } from './features/board'
 import {
   detectMetadata,
   deriveFallbackTitle,
@@ -25,11 +29,7 @@ import {
   storeSession,
   type AppSession
 } from './features/sessionMode'
-import {
-  applyPendingSharedPayloadToForm,
-  setMobileCardExpanded,
-  syncMobileCardsForViewport
-} from './features/uiState'
+import { applyPendingSharedPayloadToForm } from './features/uiState'
 
 type InstallPromptEvent = Event & {
   prompt: () => Promise<void>
@@ -63,82 +63,12 @@ let latestMetadata:
 
 app.innerHTML = `
   <main class="page-shell">
-    <section class="landing" id="auth-panel">
-      <div class="landing-copy">
-        <p class="eyebrow">LINKLOCKER</p>
-        <h1>Save now, sort later.</h1>
-        <p class="subtitle">Notion calm + Pinterest flow. Keep links grouped, tagged, and ready offline.</p>
-      </div>
-
-      <div class="auth-card">
-        <h2>Login or Register</h2>
-        <form id="auth-form" class="stack">
-          <input id="username" type="text" placeholder="Username" required />
-          <input id="password" type="password" placeholder="Password (min 6 chars)" required minlength="6" />
-          <div class="row">
-            <button id="login-btn" data-mode="login" type="submit">Login</button>
-            <button data-mode="register" type="button" id="register-btn" class="secondary">Register</button>
-          </div>
-          <button id="offline-mode-btn" type="button" class="secondary">Use Offline Mode (No Account)</button>
-        </form>
-        <p id="auth-message" class="muted"></p>
-      </div>
-    </section>
-
-    <section id="app-panel" hidden>
-      <header class="topbar panel">
-        <div>
-          <p class="eyebrow">YOUR SPACE</p>
-          <h2>Boards by Groups or Tags</h2>
-        </div>
-        <div class="row">
-          <div id="sync-status" class="status-pill">Checking sync state...</div>
-          <label for="mode-switch" class="mode-switch-label">Mode</label>
-          <select id="mode-switch" class="mode-switch" aria-label="App mode">
-            <option value="account">Account Sync</option>
-            <option value="offline">Offline Local</option>
-          </select>
-          <button id="install-btn" type="button" class="secondary install-btn" hidden>Install App</button>
-          <button id="logout-btn" type="button" class="secondary">Logout</button>
-        </div>
-      </header>
-
-      <section class="panel mobile-card" id="composer-card">
-        <button type="button" class="mobile-card-toggle" data-card-toggle aria-expanded="false">Add Link</button>
-        <div class="mobile-card-body" data-card-body>
-          <form id="link-form" class="stack">
-            <input id="link-url" type="url" placeholder="https://example.com" required />
-            <input id="link-title" type="text" placeholder="Title (optional)" />
-            <input id="link-group" type="text" placeholder="Group (optional, ex: Work)" />
-            <input id="link-tags" type="text" placeholder="Tags (optional, comma separated)" />
-            <button id="metadata-btn" type="button" class="secondary">Auto Fill Metadata</button>
-            <button type="submit">Save Link</button>
-          </form>
-          <p id="save-message" class="muted"></p>
-        </div>
-      </section>
-
-      <section class="panel mobile-card" id="filters-card">
-        <button type="button" class="mobile-card-toggle" data-card-toggle aria-expanded="false">Filters & View</button>
-        <div class="mobile-card-body" data-card-body>
-          <div class="filter-grid">
-            <select id="view-mode">
-              <option value="group">View: Groups</option>
-              <option value="tag">View: Tags</option>
-            </select>
-            <select id="filter-group">
-              <option value="">All groups</option>
-            </select>
-            <input id="filter-tag" type="text" placeholder="Filter by tag" />
-            <button id="clear-filters" type="button" class="secondary">Clear filters</button>
-          </div>
-        </div>
-      </section>
-
-      <section id="link-board" class="board"></section>
-    </section>
+    ${renderLoginPageHtml()}
+    ${renderAppPageHtml()}
   </main>
 `
+
+// ── Element queries ──────────────────────────────────────────────
 
 const syncStatusEl = document.querySelector<HTMLElement>('#sync-status')
 const authPanel = document.querySelector<HTMLElement>('#auth-panel')
@@ -164,7 +94,10 @@ const groupFilter = document.querySelector<HTMLSelectElement>('#filter-group')
 const tagFilter = document.querySelector<HTMLInputElement>('#filter-tag')
 const clearFiltersBtn = document.querySelector<HTMLButtonElement>('#clear-filters')
 const composerCard = document.querySelector<HTMLElement>('#composer-card')
-const filtersCard = document.querySelector<HTMLElement>('#filters-card')
+const groupCard = document.querySelector<HTMLElement>('#group-card')
+const groupForm = document.querySelector<HTMLFormElement>('#group-form')
+const groupNameInput = document.querySelector<HTMLInputElement>('#group-name')
+const groupMessage = document.querySelector<HTMLElement>('#group-message')
 
 if (
   !syncStatusEl ||
@@ -191,17 +124,43 @@ if (
   !tagFilter ||
   !clearFiltersBtn ||
   !composerCard ||
-  !filtersCard
+  !groupCard ||
+  !groupForm ||
+  !groupNameInput ||
+  !groupMessage
 ) {
   throw new Error('Missing expected UI elements')
 }
 
 const pendingSharedPayload = parseSharedPayloadFromLocation(window.location, window.history)
-const mobileCards = [composerCard, filtersCard]
 
 cleanupStatus = attachSyncStatus(syncStatusEl, {
   isLocalOnlyMode: () => offlineOnlyMode
 })
+
+// ── Greeting & stats ─────────────────────────────────────────────
+
+const updateGreeting = (username: string | null) => {
+  const el = document.querySelector<HTMLElement>('#app-greeting')
+  if (el) el.textContent = username ? `Hello, ${username}!` : 'Hello!'
+}
+
+const updateStats = (rows: LinkRow[]) => {
+  const statLinks = document.querySelector<HTMLElement>('#stat-links')
+  const statGroups = document.querySelector<HTMLElement>('#stat-groups')
+  const statTags = document.querySelector<HTMLElement>('#stat-tags')
+  if (statLinks) statLinks.textContent = String(rows.length)
+  if (statGroups) {
+    const groups = new Set(rows.map((r) => r.group).filter(Boolean))
+    statGroups.textContent = String(groups.size)
+  }
+  if (statTags) {
+    const tags = new Set(rows.flatMap((r) => r.tags))
+    statTags.textContent = String(tags.size)
+  }
+}
+
+// ── Auth UI ───────────────────────────────────────────────────────
 
 const setAuthUi = (loggedIn: boolean) => {
   authPanel.hidden = loggedIn
@@ -209,7 +168,7 @@ const setAuthUi = (loggedIn: boolean) => {
   authPanel.setAttribute('aria-hidden', String(loggedIn))
   appPanel.setAttribute('aria-hidden', String(!loggedIn))
   authPanel.style.display = loggedIn ? 'none' : 'grid'
-  appPanel.style.display = loggedIn ? 'block' : 'none'
+  appPanel.style.display = loggedIn ? 'flex' : 'none'
 
   if (loggedIn) {
     authMessage.textContent = ''
@@ -229,16 +188,13 @@ const setOfflineMode = (enabled: boolean) => {
   setStoredOfflineMode(enabled)
 
   if (enabled) {
-    if (session) {
-      clearSession()
-    }
+    if (session) clearSession()
     serverLinks = []
-    logoutBtn.textContent = 'Exit Offline Mode'
-    authMessage.textContent = ''
+    logoutBtn.setAttribute('aria-label', 'Exit offline mode')
     return
   }
 
-  logoutBtn.textContent = 'Logout'
+  logoutBtn.setAttribute('aria-label', 'Logout')
 }
 
 const saveSession = (newSession: AppSession) => {
@@ -246,6 +202,8 @@ const saveSession = (newSession: AppSession) => {
   session = newSession
   storeSession(newSession)
 }
+
+// ── Data ─────────────────────────────────────────────────────────
 
 const renderLinks = async () => {
   const localLinks = await getLocalLinks()
@@ -256,22 +214,17 @@ const renderLinks = async () => {
   const tagNeedle = tagFilter.value.trim().toLowerCase()
   const mode = viewModeSelect.value === 'tag' ? 'tag' : 'group'
 
-  linkBoard.innerHTML = renderBoardHtml(rows, selectedGroup, tagNeedle, mode, mobileMedia.matches, bucketOpenState)
+  linkBoard.innerHTML = renderBoardHtml(rows, selectedGroup, tagNeedle, mode, bucketOpenState)
+  updateStats(rows)
 }
 
 const loadServerLinks = async () => {
-  if (!session || offlineOnlyMode) {
-    return
-  }
-
+  if (!session || offlineOnlyMode) return
   serverLinks = await fetchServerLinksForSession(session)
 }
 
 const syncPendingLinks = async () => {
-  if (!session || offlineOnlyMode) {
-    return
-  }
-
+  if (!session || offlineOnlyMode) return
   await syncPendingLinksForSession(session)
   await loadServerLinks()
   await renderLinks()
@@ -280,7 +233,6 @@ const syncPendingLinks = async () => {
 const activateOfflineMode = async () => {
   setOfflineMode(true)
   setAuthUi(true)
-  syncMobileCardsForViewport(mobileCards, mobileMedia)
   applyPendingSharedPayloadToForm(pendingSharedPayload, {
     urlInput,
     titleInput,
@@ -315,11 +267,16 @@ const parseTags = (value: string): string[] =>
     .map((tag) => tag.trim().toLowerCase())
     .filter(Boolean)
 
+// ── Auth logic ───────────────────────────────────────────────────
+
 const setAuthPending = (isPending: boolean) => {
   loginBtn.disabled = isPending
   registerBtn.disabled = isPending
   offlineModeBtn.disabled = isPending
-  loginBtn.textContent = isPending ? 'Signing in...' : 'Login'
+  const loginLabel = loginBtn.querySelector<HTMLElement>('.login-btn-label')
+  if (loginLabel) {
+    loginLabel.textContent = isPending ? 'Signing in…' : 'Sign In'
+  }
 }
 
 const runAuth = async (mode: 'login' | 'register') => {
@@ -332,6 +289,7 @@ const runAuth = async (mode: 'login' | 'register') => {
     const newSession = await authenticateWithCredentials(mode, username, password)
 
     saveSession(newSession)
+    updateGreeting(newSession.username)
     setAuthUi(true)
     await loadServerLinks()
     await syncPendingLinks()
@@ -344,6 +302,8 @@ const runAuth = async (mode: 'login' | 'register') => {
   }
 }
 
+// ── Login page event listeners ───────────────────────────────────
+
 authForm.addEventListener('submit', async (event) => {
   event.preventDefault()
   await runAuth('login')
@@ -351,11 +311,7 @@ authForm.addEventListener('submit', async (event) => {
 
 loginBtn.addEventListener('click', async (event) => {
   event.preventDefault()
-
-  if (!authForm.reportValidity()) {
-    return
-  }
-
+  if (!authForm.reportValidity()) return
   await runAuth('login')
 })
 
@@ -367,6 +323,87 @@ offlineModeBtn.addEventListener('click', async () => {
   await activateOfflineMode()
 })
 
+// Login / Register tab switching
+const tabLogin = document.querySelector<HTMLButtonElement>('#tab-login')
+const tabRegister = document.querySelector<HTMLButtonElement>('#tab-register')
+
+const setAuthTab = (mode: 'login' | 'register') => {
+  const isLogin = mode === 'login'
+  tabLogin?.classList.toggle('login-tab--active', isLogin)
+  tabRegister?.classList.toggle('login-tab--active', !isLogin)
+  tabLogin?.setAttribute('aria-selected', String(isLogin))
+  tabRegister?.setAttribute('aria-selected', String(!isLogin))
+  loginBtn.hidden = !isLogin
+  registerBtn.hidden = isLogin
+}
+
+tabLogin?.addEventListener('click', () => setAuthTab('login'))
+tabRegister?.addEventListener('click', () => setAuthTab('register'))
+
+// Password visibility toggle
+const togglePasswordBtn = document.querySelector<HTMLButtonElement>('#toggle-password')
+const eyeIcon = document.querySelector<HTMLElement>('#eye-icon')
+const passwordInput = document.querySelector<HTMLInputElement>('#password')
+
+togglePasswordBtn?.addEventListener('click', () => {
+  if (!passwordInput) return
+  const isHidden = passwordInput.type === 'password'
+  passwordInput.type = isHidden ? 'text' : 'password'
+  if (eyeIcon) eyeIcon.textContent = isHidden ? 'visibility_off' : 'visibility'
+  togglePasswordBtn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password')
+})
+
+// ── App page event listeners ─────────────────────────────────────
+
+// Bookmark animation
+const bookmarkBtn = document.querySelector<HTMLButtonElement>('#bookmark-anim')
+const bookmarkIcon = bookmarkBtn?.querySelector<HTMLElement>('.bookmark-icon')
+
+const popBookmark = () => {
+  if (!bookmarkIcon) return
+  bookmarkIcon.classList.remove('is-popping')
+  void bookmarkIcon.offsetWidth // force reflow
+  bookmarkIcon.classList.add('is-popping')
+}
+
+bookmarkBtn?.addEventListener('click', popBookmark)
+bookmarkBtn?.addEventListener('touchstart', popBookmark, { passive: true })
+bookmarkIcon?.addEventListener('animationend', () => {
+  bookmarkIcon.classList.remove('is-popping')
+})
+
+// Action card toggles (always collapsible on all screen sizes)
+const setupActionCardToggles = () => {
+  const toggles = appPanel.querySelectorAll<HTMLButtonElement>('[data-card-toggle], [data-action-toggle]')
+  for (const toggle of toggles) {
+    toggle.addEventListener('click', () => {
+      const card = toggle.closest<HTMLElement>('.action-card')
+      if (!card) return
+      const isExpanded = toggle.getAttribute('aria-expanded') === 'true'
+      const body = card.querySelector<HTMLElement>('[data-card-body], [data-action-body]')
+      toggle.setAttribute('aria-expanded', String(!isExpanded))
+      if (body) body.hidden = isExpanded
+    })
+  }
+}
+setupActionCardToggles()
+
+// Collections view tabs (Groups / Tags)
+const viewGroupBtn = document.querySelector<HTMLButtonElement>('#view-group-btn')
+const viewTagBtn = document.querySelector<HTMLButtonElement>('#view-tag-btn')
+
+const setCollectionsView = (mode: 'group' | 'tag') => {
+  const isGroup = mode === 'group'
+  viewGroupBtn?.classList.toggle('coll-view-tab--active', isGroup)
+  viewTagBtn?.classList.toggle('coll-view-tab--active', !isGroup)
+  viewModeSelect.value = mode
+  void renderLinks()
+}
+
+viewGroupBtn?.addEventListener('click', () => setCollectionsView('group'))
+viewTagBtn?.addEventListener('click', () => setCollectionsView('tag'))
+
+// Mode switch
 modeSwitch.addEventListener('change', () => {
   void (async () => {
     try {
@@ -381,36 +418,14 @@ modeSwitch.addEventListener('change', () => {
   })()
 })
 
-for (const card of mobileCards) {
-  const toggle = card.querySelector<HTMLButtonElement>('[data-card-toggle]')
-
-  toggle?.addEventListener('click', () => {
-    if (!mobileMedia.matches) {
-      return
-    }
-
-    const isExpanded = toggle.getAttribute('aria-expanded') === 'true'
-    setMobileCardExpanded(card, !isExpanded)
-  })
-}
-
-mobileMedia.addEventListener('change', () => {
-  syncMobileCardsForViewport(mobileCards, mobileMedia)
-  void renderLinks()
-})
-
+// Bucket toggle (works on all screen sizes)
 linkBoard.addEventListener('click', (event) => {
   const target = event.target as HTMLElement
   const toggle = target.closest<HTMLButtonElement>('[data-bucket-toggle]')
-
-  if (!toggle || !mobileMedia.matches) {
-    return
-  }
+  if (!toggle) return
 
   const encodedBucketKey = toggle.dataset.bucketKey
-  if (!encodedBucketKey) {
-    return
-  }
+  if (!encodedBucketKey) return
 
   const bucketStateKey = decodeURIComponent(encodedBucketKey)
   const isExpanded = toggle.getAttribute('aria-expanded') === 'true'
@@ -418,6 +433,7 @@ linkBoard.addEventListener('click', (event) => {
   void renderLinks()
 })
 
+// Metadata auto-fill
 metadataBtn.addEventListener('click', async () => {
   const parsedUrl = toValidUrl(urlInput.value.trim())
 
@@ -427,7 +443,7 @@ metadataBtn.addEventListener('click', async () => {
   }
 
   metadataBtn.disabled = true
-  metadataBtn.textContent = 'Fetching metadata...'
+  metadataBtn.textContent = 'Fetching…'
 
   try {
     const metadata = await detectMetadata(parsedUrl)
@@ -455,24 +471,18 @@ metadataBtn.addEventListener('click', async () => {
     ].filter(Boolean)
 
     saveMessage.textContent = metadata.title
-      ? `Metadata applied${extraBits.length ? ` (${extraBits.join(', ')})` : ''}. You can edit title/tags before saving.`
+      ? `Metadata applied${extraBits.length ? ` (${extraBits.join(', ')})` : ''}. You can edit before saving.`
       : 'No rich metadata found. Added best-effort tags from domain.'
   } finally {
     metadataBtn.disabled = false
-    metadataBtn.textContent = 'Auto Fill Metadata'
+    metadataBtn.innerHTML = '<span class="material-symbols-rounded" aria-hidden="true">auto_awesome</span> Auto Fill'
   }
 })
 
 urlInput.addEventListener('blur', () => {
-  if (titleInput.value.trim()) {
-    return
-  }
-
+  if (titleInput.value.trim()) return
   const url = toValidUrl(urlInput.value)
-  if (!url) {
-    return
-  }
-
+  if (!url) return
   titleInput.value = deriveFallbackTitle(url)
 })
 
@@ -483,6 +493,7 @@ urlInput.addEventListener('input', () => {
   }
 })
 
+// Save link
 linkForm.addEventListener('submit', async (event) => {
   event.preventDefault()
 
@@ -530,9 +541,7 @@ linkForm.addEventListener('submit', async (event) => {
   }
 
   try {
-    if (!session) {
-      throw new Error('Not authenticated')
-    }
+    if (!session) throw new Error('Not authenticated')
 
     const created = await createServerLinkForSession(session, {
       url,
@@ -547,17 +556,44 @@ linkForm.addEventListener('submit', async (event) => {
 
     await markLinkSynced(localLink.id, created.id)
     await loadServerLinks()
-    saveMessage.textContent = 'Link saved and synced'
+    saveMessage.textContent = 'Link saved and synced ✓'
   } catch {
     saveMessage.textContent = navigator.onLine
       ? 'Save queued. Sync will retry in background.'
-      : 'Offline - link stored locally and queued for sync.'
+      : 'Offline — link stored locally and queued for sync.'
   }
 
   await renderLinks()
   void syncPendingLinks()
 })
 
+// New Group form
+groupForm.addEventListener('submit', (event) => {
+  event.preventDefault()
+  const name = groupNameInput.value.trim()
+  if (!name) return
+
+  // Pre-fill group field in Add Link and open the composer
+  groupInput.value = name
+
+  const composerToggle = composerCard.querySelector<HTMLButtonElement>('[data-card-toggle]')
+  if (composerToggle?.getAttribute('aria-expanded') === 'false') {
+    composerToggle.click()
+    // Focus the URL field
+    setTimeout(() => urlInput.focus(), 250)
+  }
+
+  // Collapse the group card
+  const groupToggle = groupCard.querySelector<HTMLButtonElement>('[data-action-toggle]')
+  if (groupToggle?.getAttribute('aria-expanded') === 'true') {
+    groupToggle.click()
+  }
+
+  groupMessage.textContent = `"${name}" ready — add your first link above.`
+  groupForm.reset()
+})
+
+// PWA install
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault()
   deferredInstallPrompt = event as InstallPromptEvent
@@ -565,16 +601,10 @@ window.addEventListener('beforeinstallprompt', (event) => {
 })
 
 installBtn.addEventListener('click', async () => {
-  if (!deferredInstallPrompt) {
-    return
-  }
-
+  if (!deferredInstallPrompt) return
   await deferredInstallPrompt.prompt()
   const choice = await deferredInstallPrompt.userChoice
-  if (choice.outcome === 'accepted') {
-    installBtn.hidden = true
-  }
-
+  if (choice.outcome === 'accepted') installBtn.hidden = true
   deferredInstallPrompt = null
 })
 
@@ -583,29 +613,22 @@ window.addEventListener('appinstalled', () => {
   installBtn.hidden = true
 })
 
+// Logout
 logoutBtn.addEventListener('click', () => {
   if (offlineOnlyMode) {
     void activateAccountMode()
     return
   }
-
   clearSession()
   setAuthUi(false)
   linkBoard.innerHTML = ''
   saveMessage.textContent = ''
 })
 
-viewModeSelect.addEventListener('change', () => {
-  void renderLinks()
-})
-
-groupFilter.addEventListener('change', () => {
-  void renderLinks()
-})
-
-tagFilter.addEventListener('input', () => {
-  void renderLinks()
-})
+// Collections filters
+viewModeSelect.addEventListener('change', () => void renderLinks())
+groupFilter.addEventListener('change', () => void renderLinks())
+tagFilter.addEventListener('input', () => void renderLinks())
 
 clearFiltersBtn.addEventListener('click', () => {
   groupFilter.value = ''
@@ -613,17 +636,14 @@ clearFiltersBtn.addEventListener('click', () => {
   void renderLinks()
 })
 
-window.addEventListener('online', () => {
-  void syncPendingLinks()
-})
+window.addEventListener('online', () => void syncPendingLinks())
+
+// ── Initial boot ─────────────────────────────────────────────────
 
 if (session || offlineOnlyMode) {
+  updateGreeting(session?.username ?? null)
   setAuthUi(true)
   modeSwitch.value = offlineOnlyMode ? 'offline' : 'account'
-  if (offlineOnlyMode) {
-    logoutBtn.textContent = 'Exit Offline Mode'
-  }
-  syncMobileCardsForViewport(mobileCards, mobileMedia)
   applyPendingSharedPayloadToForm(pendingSharedPayload, {
     urlInput,
     titleInput,
@@ -646,7 +666,6 @@ if (session || offlineOnlyMode) {
         authMessage.textContent = 'Session expired. Please login again.'
         return
       }
-
       authMessage.textContent = 'Could not refresh data right now. Please try again.'
       await renderLinks()
     }
@@ -654,8 +673,6 @@ if (session || offlineOnlyMode) {
 } else {
   setAuthUi(false)
   modeSwitch.value = 'account'
-  syncMobileCardsForViewport(mobileCards, mobileMedia)
-
   if (pendingSharedPayload) {
     authMessage.textContent = 'Login/register or use Offline Mode to save the shared link.'
   }

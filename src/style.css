@@ -1,5 +1,5 @@
 :root {
-  --bg: #f7f3ec;
+  --bg: #f0f2ff;
   --ink: #21201d;
   --muted: #6f6659;
   --panel: #fffcf7;
@@ -13,7 +13,6 @@
   line-height: 1.5;
   font-weight: 400;
   color: var(--ink);
-  background: var(--bg);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -24,18 +23,25 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   background:
-    radial-gradient(1200px 500px at 10% -10%, #f8dcbf 0%, transparent 55%),
-    radial-gradient(800px 380px at 98% 10%, #ead8ff 0%, transparent 60%),
-    var(--bg);
+    radial-gradient(900px 400px at 5% -5%, #dde4ff 0%, transparent 55%),
+    radial-gradient(700px 350px at 98% 8%, #e8e0ff 0%, transparent 60%),
+    #f0f2ff;
 }
 
 #app {
   width: min(1080px, calc(100% - 1rem));
-  margin: 0.5rem auto 1.5rem;
+  margin: 0 auto;
+  min-height: 100vh;
 }
 
 .page-shell {
@@ -320,67 +326,6 @@ button.secondary {
   color: #214a72;
 }
 
-.pin-grid {
-  columns: 1;
-  column-gap: 0.6rem;
-}
-
-.pin {
-  display: inline-block;
-  width: 100%;
-  margin: 0 0 0.6rem;
-  border-radius: 12px;
-  border: 1px solid #eadcc9;
-  background: #fffdf8;
-  padding: 0.7rem;
-  color: inherit;
-  text-decoration: none;
-  transition: border-color 120ms ease, transform 120ms ease;
-}
-
-.pin:hover {
-  border-color: #d7b696;
-  transform: translateY(-1px);
-}
-
-.pin.pending {
-  border-color: #f0c17b;
-  background: #fff5e7;
-}
-
-.pin-title {
-  font-weight: 700;
-  word-break: break-word;
-}
-
-.pin-url {
-  margin-top: 0.26rem;
-  color: #5f7382;
-  font-size: 0.88rem;
-  word-break: break-word;
-}
-
-.pin-meta {
-  margin-top: 0.4rem;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.36rem;
-}
-
-.pin-meta span {
-  background: var(--accent-soft);
-  color: #7f3c1f;
-  border-radius: 999px;
-  padding: 0.12rem 0.45rem;
-  font-size: 0.76rem;
-}
-
-.pin small {
-  margin-top: 0.5rem;
-  display: block;
-  color: var(--muted);
-}
-
 .empty-state {
   margin: 0;
   text-align: center;
@@ -461,13 +406,4 @@ button.secondary {
     content: '';
   }
 
-  .pin-grid {
-    columns: 2;
-  }
-}
-
-@media (min-width: 1100px) {
-  .pin-grid {
-    columns: 3;
-  }
 }

@@ -24,6 +24,14 @@ type GroupedRows = {
   items: LinkRow[]
 }
 
+const getDomain = (url: string): string => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
+
 const escapeHtml = (value: string): string =>
   value
     .replaceAll('&', '&amp;')
@@ -113,7 +121,6 @@ export const renderBoardHtml = (
   selectedGroup: string,
   tagNeedle: string,
   mode: BoardViewMode,
-  mobileMode: boolean,
   bucketOpenState: Map<string, boolean>
 ): string => {
   const filteredRows = rows.filter((row) => {
@@ -129,9 +136,9 @@ export const renderBoardHtml = (
   const groups = groupRowsForBoard(filteredRows, mode)
 
   return groups
-    .map((grouped, index) => {
+    .map((grouped) => {
       const bucketStateKey = `${mode}:${grouped.key}`
-      const expanded = mobileMode ? (bucketOpenState.get(bucketStateKey) ?? index === 0) : true
+      const expanded = bucketOpenState.get(bucketStateKey) ?? true
       const encodedBucketKey = encodeURIComponent(bucketStateKey)
 
       return `
@@ -144,19 +151,24 @@ export const renderBoardHtml = (
         </header>
         <div class="pin-grid" ${expanded ? '' : 'hidden'}>
           ${grouped.items
-            .map(
-              (row) => `
+            .map((row) => {
+              const domain = getDomain(row.url)
+              return `
               <a class="pin ${row.pending ? 'pending' : ''}" href="${escapeHtml(row.url)}" target="_blank" rel="noreferrer">
-                <p class="pin-title">${escapeHtml(row.label)}</p>
-                <p class="pin-url">${escapeHtml(row.url)}</p>
-                <div class="pin-meta">
-                  ${row.group ? `<span>${escapeHtml(row.group)}</span>` : ''}
-                  ${row.tags.map((tag) => `<span>#${escapeHtml(tag)}</span>`).join('')}
+                <div class="pin-card-top">
+                  <img class="pin-favicon" src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=32" loading="lazy" width="16" height="16" onerror="this.style.display='none'" alt="">
+                  <span class="pin-domain">${escapeHtml(domain)}</span>
+                  ${row.pending ? '<span class="pin-pending-badge">Pending</span>' : ''}
                 </div>
-                <small>${row.pending ? 'Pending sync' : 'Synced'}</small>
+                <div class="pin-content">
+                  <p class="pin-title">${escapeHtml(row.label)}</p>
+                  <div class="pin-meta">
+                    ${row.tags.map((tag) => `<span>#${escapeHtml(tag)}</span>`).join('')}
+                  </div>
+                </div>
               </a>
             `
-            )
+            })
             .join('')}
         </div>
       </article>
