@@ -8,10 +8,10 @@ services:
     command: npm run dev:api
     environment:
       NODE_ENV: development
-      PORT: 3000
+      PORT: 3777
       JWT_SECRET: change-me-in-production
     ports:
-      - '3000:3000'
+      - '3777:3777'
 
   web:
     build:
@@ -20,7 +20,7 @@ services:
     command: npm run dev -- --host 0.0.0.0 --port 5173
     environment:
       NODE_ENV: development
-      VITE_API_PROXY_TARGET: http://api:3000
+      VITE_API_PROXY_TARGET: http://api:3777
     ports:
       - '5173:5173'
     depends_on:

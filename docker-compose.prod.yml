@@ -7,7 +7,7 @@ services:
       dockerfile: Dockerfile.api
     environment:
       NODE_ENV: production
-      PORT: 3000
+      PORT: 3777
       JWT_SECRET: ${JWT_SECRET}
     volumes:
       - link_saver_data:/app/server/data

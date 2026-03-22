@@ -12,7 +12,7 @@ import {
 } from './db.js';
 
 const app = express();
-const port = Number(process.env.PORT ?? 3000);
+const port = Number(process.env.PORT ?? 3777);
 const jwtSecret = process.env.JWT_SECRET ?? 'dev-only-secret-change-me';
 
 app.use(cors());
