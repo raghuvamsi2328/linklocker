@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="BNKR"><defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5A9B82"></stop>
+      <stop offset="100%" stop-color="#2D7A5E"></stop>
+    </linearGradient>
+    <!-- Clip everything to the rounded-square silhouette -->
+    <clipPath id="sq">
+      <rect width="512" height="512" rx="112"></rect>
+    </clipPath>
+  </defs><rect width="512" height="512" rx="112" fill="url(#bg)"></rect><g clip-path="url(#sq)">
+
+    <!-- ── Lock shackle (drawn first so body covers the leg stubs) ── -->
+    <path d="M 200,324 L 200,268 A 56,74 0 0 1 312,268 L 312,324" fill="none" stroke="rgba(255,255,255,0.88)" stroke-width="34" stroke-linecap="round"></path>
+
+    <!-- ── Lock body ── -->
+    <rect x="152" y="310" width="208" height="162" rx="36" fill="rgba(255,255,255,0.93)"></rect>
+
+    <!-- ── Chain-link focal detail (two interlocked pills) ── -->
+    <!-- Left link (sits behind) -->
+    <rect x="180" y="376" width="84" height="40" rx="20" fill="none" stroke="#2A7358" stroke-width="11"></rect>
+    <!-- Cover: erases the right-overlap of the left link, -->
+    <!-- making the right link appear to pass in front      -->
+    <rect x="246" y="376" width="18" height="40" fill="rgba(255,255,255,0.93)"></rect>
+    <!-- Right link (sits in front) -->
+    <rect x="248" y="376" width="84" height="40" rx="20" fill="none" stroke="#2A7358" stroke-width="11"></rect>
+
+    <!-- ── Bookmark — bleeds off top-right corner, V-notch hangs inward ── -->
+    <!--   Left edge  : x = 392  (visible from x=392 to x=512 = 120 px)   -->
+    <!--   Top        : y = -10  (bleed past top edge)                     -->
+    <!--   Right edge : x = 522  (bleed past right edge)                   -->
+    <!--   Notch tip  : (457, 185)                                         -->
+    <path d="M 392,-10 L 522,-10 L 522,228 L 457,183 L 392,228 Z" fill="rgba(255,255,255,0.93)"></path>
+
+  </g></svg>
