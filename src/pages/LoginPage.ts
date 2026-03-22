@@ -3,23 +3,23 @@ export function renderLoginPageHtml(): string {
     <section class="login-page" id="auth-panel">
       <div class="login-hero">
         <div class="login-brand">
-          <span class="material-symbols-rounded login-brand-icon" aria-hidden="true">lock_open</span>
-          <span class="login-brand-name">LinkLocker</span>
+          <span class="material-symbols-rounded login-brand-icon" aria-hidden="true">security</span>
+          <span class="login-brand-name">BNKR</span>
         </div>
-        <h1 class="login-headline">Save now,<br>sort later.</h1>
-        <p class="login-tagline">Your personal link board — groups, tags, and ready offline.</p>
+        <h1 class="login-headline">Your links.<br>Your bunker.</h1>
+        <p class="login-tagline">Encrypted, local-first, and always ready — even when the internet isn't.</p>
         <ul class="login-features" aria-label="Features">
           <li class="login-feature">
-            <span class="material-symbols-rounded" aria-hidden="true">bookmarks</span>
-            <span>Organize with groups &amp; tags</span>
+            <span class="material-symbols-rounded" aria-hidden="true">shield_lock</span>
+            <span>AES-256 encrypted vault</span>
           </li>
           <li class="login-feature">
-            <span class="material-symbols-rounded" aria-hidden="true">cloud_sync</span>
-            <span>Sync across all your devices</span>
+            <span class="material-symbols-rounded" aria-hidden="true">devices</span>
+            <span>P2P sync across devices</span>
           </li>
           <li class="login-feature">
             <span class="material-symbols-rounded" aria-hidden="true">wifi_off</span>
-            <span>Works fully offline too</span>
+            <span>Fully offline capable</span>
           </li>
         </ul>
       </div>

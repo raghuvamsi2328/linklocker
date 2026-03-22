@@ -1,60 +1,54 @@
-import { getUnsyncedCount } from './db'
+/**
+ * syncStatus.ts — Vault sync status indicator.
+ *
+ * Phase 1: Always "Local vault" (IndexedDB only).
+ * Phase 4: Reflects live y-websocket connection state.
+ */
 
-type SyncStatusOptions = {
-  isLocalOnlyMode?: () => boolean
-}
+import type { WebsocketProvider } from 'y-websocket'
 
-export function attachSyncStatus(element: HTMLElement, options: SyncStatusOptions = {}): () => void {
-  let timerId: number | undefined
-
-  const refresh = async () => {
-    if (options.isLocalOnlyMode?.()) {
-      element.textContent = 'Offline mode - Local only'
+export function attachSyncStatus(
+  element: HTMLElement,
+  getProvider: () => WebsocketProvider | null
+): { cleanup: () => void; update: () => void } {
+  const update = () => {
+    if (!navigator.onLine) {
+      element.textContent    = 'Offline'
       element.dataset.status = 'offline'
       return
     }
 
-    let unsyncedCount = 0
-
-    try {
-      unsyncedCount = await getUnsyncedCount()
-    } catch {
-      element.textContent = 'Sync status unavailable'
-      element.dataset.status = 'offline'
-      return
-    }
-
-    if (unsyncedCount === 0) {
-      element.textContent = 'All changes synced'
+    const provider = getProvider()
+    if (!provider) {
+      element.textContent    = 'Local vault'
       element.dataset.status = 'synced'
       return
     }
 
-    if (!navigator.onLine) {
-      element.textContent = 'Offline - Changes will save later'
+    if (provider.wsconnected && provider.synced) {
+      element.textContent    = 'Synced'
+      element.dataset.status = 'synced'
+    } else if (provider.wsconnected) {
+      element.textContent    = 'Syncing…'
+      element.dataset.status = 'pending'
+    } else if (provider.wsconnecting) {
+      element.textContent    = 'Connecting…'
+      element.dataset.status = 'pending'
+    } else {
+      element.textContent    = 'Disconnected'
       element.dataset.status = 'offline'
-      return
     }
-
-    element.textContent = 'Syncing...'
-    element.dataset.status = 'syncing'
   }
 
-  const runRefresh = () => {
-    void refresh()
-  }
+  update()
+  window.addEventListener('online',  update)
+  window.addEventListener('offline', update)
 
-  runRefresh()
-  window.addEventListener('online', runRefresh)
-  window.addEventListener('offline', runRefresh)
-  timerId = window.setInterval(runRefresh, 2500)
-
-  return () => {
-    if (timerId !== undefined) {
-      window.clearInterval(timerId)
+  return {
+    update,
+    cleanup: () => {
+      window.removeEventListener('online',  update)
+      window.removeEventListener('offline', update)
     }
-
-    window.removeEventListener('online', runRefresh)
-    window.removeEventListener('offline', runRefresh)
   }
 }

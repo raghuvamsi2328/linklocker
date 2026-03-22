@@ -1,18 +1,26 @@
+/**
+ * main.ts — BNKR application bootstrap.
+ *
+ * Architecture:
+ *   - Yjs document (y-indexeddb) is the single source of truth for all link/group data.
+ *   - Auth is optional: users can use the local vault without an account.
+ *   - Phase 4 will add y-webrtc + y-websocket providers here for P2P sync.
+ */
+
 import './style.css'
 import './styles/login.css'
 import './styles/app.css'
 import { registerSW } from 'virtual:pwa-register'
 import { renderLoginPageHtml } from './pages/LoginPage'
 import { renderAppPageHtml } from './pages/AppPage'
-import { addLocalLink, getLocalLinks, markLinkSynced, type LocalLink } from './db'
+import { initVault, switchVault, connectSync, disconnectSync, getSync } from './yjsStore'
+import { addLink, updateLink, getLinks, deleteLink } from './data/links'
+import { createGroup, getGroups, findOrCreateGroup } from './data/groups'
 import { attachSyncStatus } from './syncStatus'
-import {
-  authenticateWithCredentials,
-  createServerLinkForSession,
-  fetchServerLinksForSession,
-  syncPendingLinksForSession,
-  type ServerLink
-} from './features/authSync'
+import { authenticate } from './features/authSync'
+import { clearAuthCache, updateCachedToken } from './features/offlineAuth'
+import { initVaultCrypto, deriveKeyFromCredentials } from './features/vaultCrypto'
+import { getDeviceIdentity } from './features/deviceIdentity'
 import { applyGroupFilterOptions, buildLinkRows, renderBoardHtml, type LinkRow } from './features/board'
 import {
   detectMetadata,
@@ -23,43 +31,33 @@ import {
 } from './features/linkMetadata'
 import {
   clearStoredSession,
-  getStoredOfflineMode,
   getStoredSession,
-  setStoredOfflineMode,
   storeSession,
   type AppSession
 } from './features/sessionMode'
 import { applyPendingSharedPayloadToForm } from './features/uiState'
+
+// ── Types ────────────────────────────────────────────────────────
 
 type InstallPromptEvent = Event & {
   prompt: () => Promise<void>
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
 }
 
-const app = document.querySelector<HTMLDivElement>('#app')
-
-if (!app) {
-  throw new Error('Missing #app root element')
-}
+// ── PWA ──────────────────────────────────────────────────────────
 
 registerSW({ immediate: true })
 
-let session: AppSession | null = getStoredSession()
-let offlineOnlyMode = getStoredOfflineMode()
-let serverLinks: ServerLink[] = []
-let cleanupStatus: (() => void) | null = null
-const mobileMedia = window.matchMedia('(max-width: 759px)')
-const bucketOpenState = new Map<string, boolean>()
-let deferredInstallPrompt: InstallPromptEvent | null = null
-let latestMetadata:
-  | {
-      url: string
-      description: string
-      image: string
-      favicon: string
-      siteName: string
-    }
-  | null = null
+// ── Yjs vault ────────────────────────────────────────────────────
+
+const _vault = initVault()
+let doc = _vault.doc
+const { ready: vaultReady } = _vault
+
+// ── App root ─────────────────────────────────────────────────────
+
+const app = document.querySelector<HTMLDivElement>('#app')
+if (!app) throw new Error('Missing #app root element')
 
 app.innerHTML = `
   <main class="page-shell">
@@ -70,73 +68,82 @@ app.innerHTML = `
 
 // ── Element queries ──────────────────────────────────────────────
 
-const syncStatusEl = document.querySelector<HTMLElement>('#sync-status')
-const authPanel = document.querySelector<HTMLElement>('#auth-panel')
-const appPanel = document.querySelector<HTMLElement>('#app-panel')
-const authForm = document.querySelector<HTMLFormElement>('#auth-form')
-const loginBtn = document.querySelector<HTMLButtonElement>('#login-btn')
-const registerBtn = document.querySelector<HTMLButtonElement>('#register-btn')
-const offlineModeBtn = document.querySelector<HTMLButtonElement>('#offline-mode-btn')
-const authMessage = document.querySelector<HTMLElement>('#auth-message')
-const modeSwitch = document.querySelector<HTMLSelectElement>('#mode-switch')
-const installBtn = document.querySelector<HTMLButtonElement>('#install-btn')
-const logoutBtn = document.querySelector<HTMLButtonElement>('#logout-btn')
-const linkForm = document.querySelector<HTMLFormElement>('#link-form')
-const saveMessage = document.querySelector<HTMLElement>('#save-message')
-const linkBoard = document.querySelector<HTMLElement>('#link-board')
-const urlInput = document.querySelector<HTMLInputElement>('#link-url')
-const titleInput = document.querySelector<HTMLInputElement>('#link-title')
-const groupInput = document.querySelector<HTMLInputElement>('#link-group')
-const tagsInput = document.querySelector<HTMLInputElement>('#link-tags')
-const metadataBtn = document.querySelector<HTMLButtonElement>('#metadata-btn')
-const viewModeSelect = document.querySelector<HTMLSelectElement>('#view-mode')
-const groupFilter = document.querySelector<HTMLSelectElement>('#filter-group')
-const tagFilter = document.querySelector<HTMLInputElement>('#filter-tag')
-const clearFiltersBtn = document.querySelector<HTMLButtonElement>('#clear-filters')
-const composerCard = document.querySelector<HTMLElement>('#composer-card')
-const groupCard = document.querySelector<HTMLElement>('#group-card')
-const groupForm = document.querySelector<HTMLFormElement>('#group-form')
-const groupNameInput = document.querySelector<HTMLInputElement>('#group-name')
-const groupMessage = document.querySelector<HTMLElement>('#group-message')
+const syncStatusEl    = document.querySelector<HTMLElement>('#sync-status')!
+const authPanel       = document.querySelector<HTMLElement>('#auth-panel')!
+const appPanel        = document.querySelector<HTMLElement>('#app-panel')!
+const authForm        = document.querySelector<HTMLFormElement>('#auth-form')!
+const loginBtn        = document.querySelector<HTMLButtonElement>('#login-btn')!
+const registerBtn     = document.querySelector<HTMLButtonElement>('#register-btn')!
+const offlineModeBtn  = document.querySelector<HTMLButtonElement>('#offline-mode-btn')!
+const authMessage     = document.querySelector<HTMLElement>('#auth-message')!
+const installBtn      = document.querySelector<HTMLButtonElement>('#install-btn')!
+const logoutBtn       = document.querySelector<HTMLButtonElement>('#logout-btn')!
+const linkForm        = document.querySelector<HTMLFormElement>('#link-form')!
+const saveMessage     = document.querySelector<HTMLElement>('#save-message')!
+const linkBoard       = document.querySelector<HTMLElement>('#link-board')!
+const urlInput        = document.querySelector<HTMLInputElement>('#link-url')!
+const titleInput      = document.querySelector<HTMLInputElement>('#link-title')!
+const groupInput      = document.querySelector<HTMLInputElement>('#link-group')!
+const tagsInput       = document.querySelector<HTMLInputElement>('#link-tags')!
+const metadataBtn     = document.querySelector<HTMLButtonElement>('#metadata-btn')!
+const viewModeSelect  = document.querySelector<HTMLSelectElement>('#view-mode')!
+const groupFilter     = document.querySelector<HTMLSelectElement>('#filter-group')!
+const tagFilter       = document.querySelector<HTMLInputElement>('#filter-tag')!
+const clearFiltersBtn = document.querySelector<HTMLButtonElement>('#clear-filters')!
+const groupForm       = document.querySelector<HTMLFormElement>('#group-form')!
+const groupNameInput  = document.querySelector<HTMLInputElement>('#group-name')!
+const exportBtn       = document.querySelector<HTMLButtonElement>('#export-btn')!
+const importFile      = document.querySelector<HTMLInputElement>('#import-file')!
+const backupMessage   = document.querySelector<HTMLElement>('#backup-message')!
+const deviceIdBtn     = document.querySelector<HTMLButtonElement>('#device-id-btn')!
+const actionModal     = document.querySelector<HTMLElement>('#action-modal')!
+const modalCloseBtn   = document.querySelector<HTMLButtonElement>('#modal-close')!
+const modalTitle      = document.querySelector<HTMLElement>('#modal-title')!
 
-if (
-  !syncStatusEl ||
-  !authPanel ||
-  !appPanel ||
-  !authForm ||
-  !loginBtn ||
-  !registerBtn ||
-  !offlineModeBtn ||
-  !authMessage ||
-  !modeSwitch ||
-  !installBtn ||
-  !logoutBtn ||
-  !linkForm ||
-  !saveMessage ||
-  !linkBoard ||
-  !urlInput ||
-  !titleInput ||
-  !groupInput ||
-  !tagsInput ||
-  !metadataBtn ||
-  !viewModeSelect ||
-  !groupFilter ||
-  !tagFilter ||
-  !clearFiltersBtn ||
-  !composerCard ||
-  !groupCard ||
-  !groupForm ||
-  !groupNameInput ||
-  !groupMessage
-) {
-  throw new Error('Missing expected UI elements')
+// ── Rotating quotes ───────────────────────────────────────────────
+
+const QUOTES = [
+  'Stop digging — you have hit bottom.',
+  "Another link you'll never revisit.",
+  'Saved for later means forgotten forever.',
+  'Your future self will not thank you.',
+  "The internet isn't going anywhere. Your attention is.",
+  'A bookmark is just a tab with commitment issues.',
+  'Collect links, not wisdom.',
+  'Every link saved is a promise left unkept.',
+  'You already have 47 open tabs. This is fine.',
+  'The vault grows. The reading list does not.',
+  'Knowledge saved ≠ knowledge gained.',
+  "The best time to read it was when you saved it. That was three years ago.",
+]
+
+const quoteEl = document.querySelector<HTMLElement>('#rotating-quote')
+if (quoteEl) {
+  let qi = Math.floor(Math.random() * QUOTES.length)
+  quoteEl.textContent = QUOTES[qi]
+  setInterval(() => {
+    qi = (qi + 1) % QUOTES.length
+    if (quoteEl) {
+      quoteEl.style.opacity = '0'
+      setTimeout(() => {
+        if (quoteEl) { quoteEl.textContent = QUOTES[qi]; quoteEl.style.opacity = '1' }
+      }, 400)
+    }
+  }, 7000)
 }
 
-const pendingSharedPayload = parseSharedPayloadFromLocation(window.location, window.history)
+// ── App state ─────────────────────────────────────────────────────
 
-cleanupStatus = attachSyncStatus(syncStatusEl, {
-  isLocalOnlyMode: () => offlineOnlyMode
-})
+let session: AppSession | null = getStoredSession()
+
+const bucketOpenState = new Map<string, boolean>()
+let deferredInstallPrompt: InstallPromptEvent | null = null
+let latestMetadata: { url: string; description: string; image: string; favicon: string; siteName: string } | null = null
+let syncStatus: { cleanup: () => void; update: () => void } | null = null
+
+// ── Sync status ──────────────────────────────────────────────────
+
+syncStatus = attachSyncStatus(syncStatusEl, getSync)
 
 // ── Greeting & stats ─────────────────────────────────────────────
 
@@ -146,185 +153,134 @@ const updateGreeting = (username: string | null) => {
 }
 
 const updateStats = (rows: LinkRow[]) => {
-  const statLinks = document.querySelector<HTMLElement>('#stat-links')
+  const statLinks  = document.querySelector<HTMLElement>('#stat-links')
   const statGroups = document.querySelector<HTMLElement>('#stat-groups')
-  const statTags = document.querySelector<HTMLElement>('#stat-tags')
-  if (statLinks) statLinks.textContent = String(rows.length)
-  if (statGroups) {
-    const groups = new Set(rows.map((r) => r.group).filter(Boolean))
-    statGroups.textContent = String(groups.size)
-  }
-  if (statTags) {
-    const tags = new Set(rows.flatMap((r) => r.tags))
-    statTags.textContent = String(tags.size)
-  }
+  const statTags   = document.querySelector<HTMLElement>('#stat-tags')
+  if (statLinks)  statLinks.textContent  = String(rows.length)
+  if (statGroups) statGroups.textContent = String(new Set(rows.map((r) => r.group).filter(Boolean)).size)
+  if (statTags)   statTags.textContent   = String(new Set(rows.flatMap((r) => r.tags)).size)
 }
 
 // ── Auth UI ───────────────────────────────────────────────────────
 
 const setAuthUi = (loggedIn: boolean) => {
-  authPanel.hidden = loggedIn
-  appPanel.hidden = !loggedIn
-  authPanel.setAttribute('aria-hidden', String(loggedIn))
-  appPanel.setAttribute('aria-hidden', String(!loggedIn))
-  authPanel.style.display = loggedIn ? 'none' : 'grid'
-  appPanel.style.display = loggedIn ? 'flex' : 'none'
-
+  authPanel.hidden  = loggedIn
+  appPanel.hidden   = !loggedIn
+  authPanel.style.display = loggedIn ? 'none'   : 'grid'
+  appPanel.style.display  = loggedIn ? 'flex'   : 'none'
   if (loggedIn) {
     authMessage.textContent = ''
     authForm.reset()
   }
 }
 
-const clearSession = () => {
-  session = null
-  clearStoredSession()
-  serverLinks = []
+// ── Board render ──────────────────────────────────────────────────
+
+const renderLinks = () => {
+  void (async () => {
+    const links  = await getLinks(doc)
+    const groups = await getGroups(doc)
+    const rows   = buildLinkRows(links, groups)
+    applyGroupFilterOptions(groupFilter, rows)
+
+    const selectedGroup = groupFilter.value
+    const tagNeedle     = tagFilter.value.trim().toLowerCase()
+    const mode          = viewModeSelect.value === 'tag' ? 'tag' : 'group'
+
+    linkBoard.innerHTML = renderBoardHtml(rows, selectedGroup, tagNeedle, mode, bucketOpenState)
+    updateStats(rows)
+  })()
 }
 
-const setOfflineMode = (enabled: boolean) => {
-  offlineOnlyMode = enabled
-  modeSwitch.value = enabled ? 'offline' : 'account'
-  setStoredOfflineMode(enabled)
+// Re-render whenever the vault changes (live reactive updates)
+const linksObserver  = () => renderLinks()
+const groupsObserver = () => renderLinks()
 
-  if (enabled) {
-    if (session) clearSession()
-    serverLinks = []
-    logoutBtn.setAttribute('aria-label', 'Exit offline mode')
-    return
-  }
-
-  logoutBtn.setAttribute('aria-label', 'Logout')
+const attachVaultObservers = (d: typeof doc) => {
+  d.getMap('links').observe(linksObserver)
+  d.getMap('groups').observe(groupsObserver)
+}
+const detachVaultObservers = (d: typeof doc) => {
+  d.getMap('links').unobserve(linksObserver)
+  d.getMap('groups').unobserve(groupsObserver)
 }
 
-const saveSession = (newSession: AppSession) => {
-  setOfflineMode(false)
-  session = newSession
-  storeSession(newSession)
-}
+attachVaultObservers(doc)
 
-// ── Data ─────────────────────────────────────────────────────────
-
-const renderLinks = async () => {
-  const localLinks = await getLocalLinks()
-  const rows = buildLinkRows(serverLinks, localLinks, offlineOnlyMode)
-  applyGroupFilterOptions(groupFilter, rows)
-
-  const selectedGroup = groupFilter.value
-  const tagNeedle = tagFilter.value.trim().toLowerCase()
-  const mode = viewModeSelect.value === 'tag' ? 'tag' : 'group'
-
-  linkBoard.innerHTML = renderBoardHtml(rows, selectedGroup, tagNeedle, mode, bucketOpenState)
-  updateStats(rows)
-}
-
-const loadServerLinks = async () => {
-  if (!session || offlineOnlyMode) return
-  serverLinks = await fetchServerLinksForSession(session)
-}
-
-const syncPendingLinks = async () => {
-  if (!session || offlineOnlyMode) return
-  await syncPendingLinksForSession(session)
-  await loadServerLinks()
-  await renderLinks()
-}
-
-const activateOfflineMode = async () => {
-  setOfflineMode(true)
-  setAuthUi(true)
-  applyPendingSharedPayloadToForm(pendingSharedPayload, {
-    urlInput,
-    titleInput,
-    saveMessage,
-    composerCard,
-    mobileMedia
-  })
-  await renderLinks()
-  saveMessage.textContent = 'Offline mode enabled. Links stay on this device only.'
-}
-
-const activateAccountMode = async () => {
-  setOfflineMode(false)
-
-  if (!session) {
-    setAuthUi(false)
-    linkBoard.innerHTML = ''
-    saveMessage.textContent = ''
-    authMessage.textContent = 'Account Sync mode selected. Login or register to continue.'
-    return
-  }
-
-  setAuthUi(true)
-  await loadServerLinks()
-  await syncPendingLinks()
-  await renderLinks()
-}
+// ── Tag helpers ──────────────────────────────────────────────────
 
 const parseTags = (value: string): string[] =>
-  value
-    .split(',')
-    .map((tag) => tag.trim().toLowerCase())
-    .filter(Boolean)
+  value.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean)
 
 // ── Auth logic ───────────────────────────────────────────────────
 
-const setAuthPending = (isPending: boolean) => {
-  loginBtn.disabled = isPending
-  registerBtn.disabled = isPending
-  offlineModeBtn.disabled = isPending
-  const loginLabel = loginBtn.querySelector<HTMLElement>('.login-btn-label')
-  if (loginLabel) {
-    loginLabel.textContent = isPending ? 'Signing in…' : 'Sign In'
-  }
+const setAuthPending = (pending: boolean) => {
+  loginBtn.disabled    = pending
+  registerBtn.disabled = pending
+  offlineModeBtn.disabled = pending
+  const label = loginBtn.querySelector<HTMLElement>('.login-btn-label')
+  if (label) label.textContent = pending ? 'Signing in…' : 'Sign In'
 }
 
 const runAuth = async (mode: 'login' | 'register') => {
   setAuthPending(true)
   authMessage.textContent = ''
-
   try {
     const username = (document.querySelector<HTMLInputElement>('#username')?.value ?? '').trim().toLowerCase()
-    const password = document.querySelector<HTMLInputElement>('#password')?.value ?? ''
-    const newSession = await authenticateWithCredentials(mode, username, password)
+    const password =  document.querySelector<HTMLInputElement>('#password')?.value ?? ''
+    const { session: newSession, wasOffline } = await authenticate(mode, username, password)
+    session = newSession
+    storeSession(newSession)
 
-    saveSession(newSession)
+    // Derive a deterministic vault key from credentials so all devices
+    // logged in as the same user can decrypt each other's synced data.
+    await deriveKeyFromCredentials(username, password)
+
+    // Switch to a user-specific IndexedDB vault so different accounts are fully isolated
+    console.log('[boot] runAuth: switching vault to user:', newSession.username)
+    detachVaultObservers(doc)
+    doc = await switchVault(newSession.username)
+    attachVaultObservers(doc)
+    console.log('[boot] runAuth: vault switched, doc guid:', doc.guid)
+
+    // Phase 4: start WebSocket sync for this user's vault
+    const provider = connectSync(`bnkr-vault-${newSession.username}`, SYNC_URL)
+    provider.on('status', () => syncStatus?.update())
+    provider.on('sync',   () => syncStatus?.update())
+
     updateGreeting(newSession.username)
     setAuthUi(true)
-    await loadServerLinks()
-    await syncPendingLinks()
-    await renderLinks()
+    if (wasOffline) {
+      authMessage.textContent = 'Signed in offline using cached credentials.'
+    }
+    renderLinks()
   } catch (error) {
-    const fallbackMessage = 'Unable to connect. Is the API server running?'
-    authMessage.textContent = error instanceof Error ? error.message || fallbackMessage : fallbackMessage
+    const fallback = mode === 'register'
+      ? 'Registration requires a network connection.'
+      : 'Unable to sign in. Check your connection or credentials.'
+    authMessage.textContent = error instanceof Error ? error.message || fallback : fallback
   } finally {
     setAuthPending(false)
   }
 }
 
-// ── Login page event listeners ───────────────────────────────────
+// ── Login page listeners ──────────────────────────────────────────
 
-authForm.addEventListener('submit', async (event) => {
-  event.preventDefault()
-  await runAuth('login')
-})
+authForm.addEventListener('submit', async (e) => { e.preventDefault(); await runAuth('login') })
+loginBtn.addEventListener('click',  async (e) => { e.preventDefault(); if (!authForm.reportValidity()) return; await runAuth('login') })
+registerBtn.addEventListener('click', async () => { await runAuth('register') })
 
-loginBtn.addEventListener('click', async (event) => {
-  event.preventDefault()
-  if (!authForm.reportValidity()) return
-  await runAuth('login')
-})
-
-registerBtn.addEventListener('click', async () => {
-  await runAuth('register')
-})
-
-offlineModeBtn.addEventListener('click', async () => {
-  await activateOfflineMode()
+offlineModeBtn.addEventListener('click', () => {
+  setAuthUi(true)
+  applyPendingSharedPayloadToForm(parseSharedPayloadFromLocation(window.location, window.history), {
+    urlInput, titleInput, saveMessage, openComposer: () => openModal('link')
+  })
+  renderLinks()
+  saveMessage.textContent = 'Running in local-only vault mode.'
 })
 
 // Login / Register tab switching
-const tabLogin = document.querySelector<HTMLButtonElement>('#tab-login')
+const tabLogin    = document.querySelector<HTMLButtonElement>('#tab-login')
 const tabRegister = document.querySelector<HTMLButtonElement>('#tab-register')
 
 const setAuthTab = (mode: 'login' | 'register') => {
@@ -333,17 +289,17 @@ const setAuthTab = (mode: 'login' | 'register') => {
   tabRegister?.classList.toggle('login-tab--active', !isLogin)
   tabLogin?.setAttribute('aria-selected', String(isLogin))
   tabRegister?.setAttribute('aria-selected', String(!isLogin))
-  loginBtn.hidden = !isLogin
+  loginBtn.hidden    = !isLogin
   registerBtn.hidden = isLogin
 }
 
-tabLogin?.addEventListener('click', () => setAuthTab('login'))
+tabLogin?.addEventListener('click',    () => setAuthTab('login'))
 tabRegister?.addEventListener('click', () => setAuthTab('register'))
 
 // Password visibility toggle
 const togglePasswordBtn = document.querySelector<HTMLButtonElement>('#toggle-password')
-const eyeIcon = document.querySelector<HTMLElement>('#eye-icon')
-const passwordInput = document.querySelector<HTMLInputElement>('#password')
+const eyeIcon           = document.querySelector<HTMLElement>('#eye-icon')
+const passwordInput     = document.querySelector<HTMLInputElement>('#password')
 
 togglePasswordBtn?.addEventListener('click', () => {
   if (!passwordInput) return
@@ -353,125 +309,106 @@ togglePasswordBtn?.addEventListener('click', () => {
   togglePasswordBtn.setAttribute('aria-label', isHidden ? 'Hide password' : 'Show password')
 })
 
-// ── App page event listeners ─────────────────────────────────────
+// ── App page listeners ────────────────────────────────────────────
 
 // Bookmark animation
-const bookmarkBtn = document.querySelector<HTMLButtonElement>('#bookmark-anim')
+const bookmarkBtn  = document.querySelector<HTMLButtonElement>('#bookmark-anim')
 const bookmarkIcon = bookmarkBtn?.querySelector<HTMLElement>('.bookmark-icon')
 
 const popBookmark = () => {
   if (!bookmarkIcon) return
   bookmarkIcon.classList.remove('is-popping')
-  void bookmarkIcon.offsetWidth // force reflow
+  void bookmarkIcon.offsetWidth
   bookmarkIcon.classList.add('is-popping')
 }
 
-bookmarkBtn?.addEventListener('click', popBookmark)
+bookmarkBtn?.addEventListener('click',      popBookmark)
 bookmarkBtn?.addEventListener('touchstart', popBookmark, { passive: true })
-bookmarkIcon?.addEventListener('animationend', () => {
-  bookmarkIcon.classList.remove('is-popping')
-})
+bookmarkIcon?.addEventListener('animationend', () => bookmarkIcon.classList.remove('is-popping'))
 
-// Action card toggles (always collapsible on all screen sizes)
-const setupActionCardToggles = () => {
-  const toggles = appPanel.querySelectorAll<HTMLButtonElement>('[data-card-toggle], [data-action-toggle]')
-  for (const toggle of toggles) {
-    toggle.addEventListener('click', () => {
-      const card = toggle.closest<HTMLElement>('.action-card')
-      if (!card) return
-      const isExpanded = toggle.getAttribute('aria-expanded') === 'true'
-      const body = card.querySelector<HTMLElement>('[data-card-body], [data-action-body]')
-      toggle.setAttribute('aria-expanded', String(!isExpanded))
-      if (body) body.hidden = isExpanded
-    })
-  }
+// ── Action modal ─────────────────────────────────────────────────
+
+const MODAL_PANELS: Record<string, { title: string; panelId: string }> = {
+  link:   { title: 'Add Link',   panelId: 'modal-link-panel' },
+  backup: { title: 'Backup',     panelId: 'modal-backup-panel' },
+  group:  { title: 'New Group',  panelId: 'modal-group-panel' },
 }
-setupActionCardToggles()
 
-// Collections view tabs (Groups / Tags)
+const openModal = (panelKey: string) => {
+  const meta = MODAL_PANELS[panelKey]
+  if (!meta) return
+  for (const p of actionModal.querySelectorAll<HTMLElement>('.modal-panel')) p.hidden = true
+  const panel = document.getElementById(meta.panelId)
+  if (panel) panel.hidden = false
+  modalTitle.textContent = meta.title
+  actionModal.hidden = false
+  document.body.style.overflow = 'hidden'
+  setTimeout(() => panel?.querySelector<HTMLElement>('input')?.focus(), 80)
+}
+
+const closeModal = () => {
+  actionModal.hidden = true
+  document.body.style.overflow = ''
+}
+
+for (const card of appPanel.querySelectorAll<HTMLElement>('[data-opens-panel]')) {
+  card.addEventListener('click', () => { openModal(card.dataset.opensPanel ?? '') })
+}
+
+modalCloseBtn.addEventListener('click', closeModal)
+actionModal.addEventListener('click', (e) => { if (e.target === actionModal) closeModal() })
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !actionModal.hidden) closeModal() })
+
+// Collections view tabs
 const viewGroupBtn = document.querySelector<HTMLButtonElement>('#view-group-btn')
-const viewTagBtn = document.querySelector<HTMLButtonElement>('#view-tag-btn')
+const viewTagBtn   = document.querySelector<HTMLButtonElement>('#view-tag-btn')
 
 const setCollectionsView = (mode: 'group' | 'tag') => {
-  const isGroup = mode === 'group'
-  viewGroupBtn?.classList.toggle('coll-view-tab--active', isGroup)
-  viewTagBtn?.classList.toggle('coll-view-tab--active', !isGroup)
+  viewGroupBtn?.classList.toggle('coll-view-tab--active', mode === 'group')
+  viewTagBtn?.classList.toggle('coll-view-tab--active',  mode === 'tag')
   viewModeSelect.value = mode
-  void renderLinks()
+  renderLinks()
 }
 
 viewGroupBtn?.addEventListener('click', () => setCollectionsView('group'))
-viewTagBtn?.addEventListener('click', () => setCollectionsView('tag'))
+viewTagBtn?.addEventListener('click',   () => setCollectionsView('tag'))
 
-// Mode switch
-modeSwitch.addEventListener('change', () => {
-  void (async () => {
-    try {
-      if (modeSwitch.value === 'offline') {
-        await activateOfflineMode()
-      } else {
-        await activateAccountMode()
-      }
-    } catch {
-      saveMessage.textContent = 'Unable to switch mode right now. Please retry.'
-    }
-  })()
-})
-
-// Bucket toggle (works on all screen sizes)
+// Bucket toggle
 linkBoard.addEventListener('click', (event) => {
-  const target = event.target as HTMLElement
-  const toggle = target.closest<HTMLButtonElement>('[data-bucket-toggle]')
+  const toggle = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-bucket-toggle]')
   if (!toggle) return
-
-  const encodedBucketKey = toggle.dataset.bucketKey
-  if (!encodedBucketKey) return
-
-  const bucketStateKey = decodeURIComponent(encodedBucketKey)
-  const isExpanded = toggle.getAttribute('aria-expanded') === 'true'
-  bucketOpenState.set(bucketStateKey, !isExpanded)
-  void renderLinks()
+  const encoded = toggle.dataset.bucketKey
+  if (!encoded) return
+  const key      = decodeURIComponent(encoded)
+  const isOpen   = toggle.getAttribute('aria-expanded') === 'true'
+  bucketOpenState.set(key, !isOpen)
+  renderLinks()
 })
 
 // Metadata auto-fill
 metadataBtn.addEventListener('click', async () => {
   const parsedUrl = toValidUrl(urlInput.value.trim())
-
   if (!parsedUrl) {
     saveMessage.textContent = 'Enter a valid URL first to fetch metadata.'
     return
   }
-
   metadataBtn.disabled = true
   metadataBtn.textContent = 'Fetching…'
-
   try {
-    const metadata = await detectMetadata(parsedUrl)
-    latestMetadata = {
-      url: parsedUrl,
-      description: metadata.description,
-      image: metadata.image,
-      favicon: metadata.favicon,
-      siteName: metadata.siteName
+    const meta = await detectMetadata(parsedUrl)
+    latestMetadata = { url: parsedUrl, description: meta.description, image: meta.image, favicon: meta.favicon, siteName: meta.siteName }
+    if (meta.title && (!titleInput.value.trim() || isUrlLike(titleInput.value.trim()))) {
+      titleInput.value = meta.title
     }
-
-    if (metadata.title && (!titleInput.value.trim() || isUrlLike(titleInput.value.trim()))) {
-      titleInput.value = metadata.title
-    }
-
-    const existingTags = parseTags(tagsInput.value)
-    const mergedTags = [...new Set([...existingTags, ...metadata.tags])]
-    tagsInput.value = mergedTags.join(', ')
-
-    const extraBits = [
-      metadata.siteName ? `site: ${metadata.siteName}` : '',
-      metadata.description ? 'description found' : '',
-      metadata.image ? 'image found' : '',
-      metadata.favicon ? 'favicon found' : ''
+    const merged = [...new Set([...parseTags(tagsInput.value), ...meta.tags])]
+    tagsInput.value = merged.join(', ')
+    const extras = [
+      meta.siteName   ? `site: ${meta.siteName}` : '',
+      meta.description ? 'description'            : '',
+      meta.image       ? 'image'                  : ''
     ].filter(Boolean)
-
-    saveMessage.textContent = metadata.title
-      ? `Metadata applied${extraBits.length ? ` (${extraBits.join(', ')})` : ''}. You can edit before saving.`
+    saveMessage.textContent = meta.title
+      ? `Metadata applied${extras.length ? ` (${extras.join(', ')})` : ''}.`
       : 'No rich metadata found. Added best-effort tags from domain.'
   } finally {
     metadataBtn.disabled = false
@@ -487,110 +424,75 @@ urlInput.addEventListener('blur', () => {
 })
 
 urlInput.addEventListener('input', () => {
-  const parsedUrl = toValidUrl(urlInput.value.trim())
-  if (!latestMetadata || !parsedUrl || latestMetadata.url !== parsedUrl) {
-    latestMetadata = null
-  }
+  const parsed = toValidUrl(urlInput.value.trim())
+  if (!latestMetadata || !parsed || latestMetadata.url !== parsed) latestMetadata = null
 })
 
-// Save link
+// Save link — writes directly to the Yjs vault
 linkForm.addEventListener('submit', async (event) => {
   event.preventDefault()
 
-  if (!session && !offlineOnlyMode) {
-    saveMessage.textContent = 'Please login first'
-    return
-  }
-
-  const url = toValidUrl(urlInput.value.trim())
-  const title = titleInput.value.trim()
-  const group = groupInput.value.trim()
-  const tags = parseTags(tagsInput.value)
+  const url       = toValidUrl(urlInput.value.trim())
+  const title     = titleInput.value.trim()
+  const groupName = groupInput.value.trim()
+  const tags      = parseTags(tagsInput.value)
 
   if (!url) {
     saveMessage.textContent = 'URL is required'
     return
   }
 
-  let localLink: LocalLink
-  try {
-    const metadataForSave = latestMetadata && latestMetadata.url === url ? latestMetadata : null
-    localLink = await addLocalLink(url, title, group, tags, {
-      synced: offlineOnlyMode,
-      localOnly: offlineOnlyMode,
-      description: metadataForSave?.description,
-      image: metadataForSave?.image,
-      favicon: metadataForSave?.favicon,
-      siteName: metadataForSave?.siteName
-    })
-  } catch {
-    saveMessage.textContent = 'Unable to store locally'
-    return
+  const group = groupName ? await findOrCreateGroup(doc, groupName) : null
+  const meta  = latestMetadata?.url === url ? latestMetadata : null
+
+  const saved = await addLink(doc, {
+    url,
+    title: title || deriveFallbackTitle(url),
+    groupId:     group?.id ?? '',
+    tags,
+    description: meta?.description,
+    image:       meta?.image,
+    favicon:     meta?.favicon,
+    siteName:    meta?.siteName
+  })
+
+  // If Auto Fill wasn't used, background-fetch metadata so the card gets an image
+  if (!meta) {
+    detectMetadata(url).then(async (m) => {
+      const patch: Partial<{ title: string; description: string; image: string; favicon: string; siteName: string }> = {}
+      if (m.title && isUrlLike(saved.title)) patch.title = m.title
+      if (m.description) patch.description = m.description
+      if (m.image)       patch.image       = m.image
+      if (m.favicon)     patch.favicon     = m.favicon
+      if (m.siteName)    patch.siteName    = m.siteName
+      if (Object.keys(patch).length) await updateLink(doc, saved.id, patch)
+    }).catch(() => {})
   }
 
-  await renderLinks()
-  urlInput.value = ''
+  urlInput.value   = ''
   titleInput.value = ''
   groupInput.value = ''
-  tagsInput.value = ''
+  tagsInput.value  = ''
+  latestMetadata   = null
 
-  if (offlineOnlyMode) {
-    saveMessage.textContent = 'Saved locally in offline mode.'
-    await renderLinks()
-    return
-  }
-
-  try {
-    if (!session) throw new Error('Not authenticated')
-
-    const created = await createServerLinkForSession(session, {
-      url,
-      title,
-      group,
-      tags,
-      description: localLink.description,
-      image: localLink.image,
-      favicon: localLink.favicon,
-      siteName: localLink.siteName
-    })
-
-    await markLinkSynced(localLink.id, created.id)
-    await loadServerLinks()
-    saveMessage.textContent = 'Link saved and synced ✓'
-  } catch {
-    saveMessage.textContent = navigator.onLine
-      ? 'Save queued. Sync will retry in background.'
-      : 'Offline — link stored locally and queued for sync.'
-  }
-
-  await renderLinks()
-  void syncPendingLinks()
+  saveMessage.textContent = 'Link saved to vault ✓'
+  setTimeout(() => { saveMessage.textContent = '' }, 2500)
 })
 
 // New Group form
-groupForm.addEventListener('submit', (event) => {
+groupForm.addEventListener('submit', async (event) => {
   event.preventDefault()
   const name = groupNameInput.value.trim()
   if (!name) return
 
-  // Pre-fill group field in Add Link and open the composer
+  await createGroup(doc, name)
+
+  // Pre-fill group in link modal and switch to it
   groupInput.value = name
-
-  const composerToggle = composerCard.querySelector<HTMLButtonElement>('[data-card-toggle]')
-  if (composerToggle?.getAttribute('aria-expanded') === 'false') {
-    composerToggle.click()
-    // Focus the URL field
-    setTimeout(() => urlInput.focus(), 250)
-  }
-
-  // Collapse the group card
-  const groupToggle = groupCard.querySelector<HTMLButtonElement>('[data-action-toggle]')
-  if (groupToggle?.getAttribute('aria-expanded') === 'true') {
-    groupToggle.click()
-  }
-
-  groupMessage.textContent = `"${name}" ready — add your first link above.`
   groupForm.reset()
+  closeModal()
+  openModal('link')
+  setTimeout(() => urlInput.focus(), 150)
 })
 
 // PWA install
@@ -613,71 +515,202 @@ window.addEventListener('appinstalled', () => {
   installBtn.hidden = true
 })
 
-// Logout
+// Logout — clear session, credential cache, and WebRTC connection
 logoutBtn.addEventListener('click', () => {
-  if (offlineOnlyMode) {
-    void activateAccountMode()
-    return
-  }
-  clearSession()
+  session = null
+  clearStoredSession()
+  clearAuthCache().catch(() => {})
+  disconnectSync()
+  syncStatus?.update()
   setAuthUi(false)
-  linkBoard.innerHTML = ''
-  saveMessage.textContent = ''
 })
 
-// Collections filters
-viewModeSelect.addEventListener('change', () => void renderLinks())
-groupFilter.addEventListener('change', () => void renderLinks())
-tagFilter.addEventListener('input', () => void renderLinks())
+// Refresh-on-reconnect: when the network comes back, try to get a fresh JWT
+// so the cached token stays valid for future offline sessions.
+window.addEventListener('online', () => {
+  if (!session) return
+  fetch('/api/health')
+    .then((r) => {
+      if (!r.ok) return
+      updateCachedToken(session!.username, session!.token).catch(() => {})
+    })
+    .catch(() => {})
+})
+
+// ── Delete link (event delegation on the board) ───────────────────
+
+linkBoard.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-delete-id]')
+  if (!btn) return
+  e.preventDefault()
+  e.stopPropagation()
+  const id = btn.dataset.deleteId
+  if (!id) return
+  deleteLink(doc, id)
+})
+
+// ── Export vault ──────────────────────────────────────────────────
+
+exportBtn.addEventListener('click', async () => {
+  const links  = await getLinks(doc)
+  const groups = await getGroups(doc)
+  const payload = JSON.stringify({ version: 1, links, groups }, null, 2)
+  const blob    = new Blob([payload], { type: 'application/json' })
+  const url     = URL.createObjectURL(blob)
+  const a       = document.createElement('a')
+  a.href        = url
+  a.download    = `bnkr-backup-${new Date().toISOString().slice(0, 10)}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+  backupMessage.textContent = 'Vault exported successfully.'
+  setTimeout(() => { backupMessage.textContent = '' }, 3000)
+})
+
+// ── Import vault ──────────────────────────────────────────────────
+
+importFile.addEventListener('change', async () => {
+  const file = importFile.files?.[0]
+  if (!file) return
+  importFile.value = ''
+
+  try {
+    const text    = await file.text()
+    const parsed  = JSON.parse(text) as { version?: number; links?: unknown[]; groups?: unknown[] }
+
+    if (!Array.isArray(parsed.links)) {
+      backupMessage.textContent = 'Invalid backup file — missing links array.'
+      return
+    }
+
+    // Import groups first (links reference group IDs)
+    const groupIdMap = new Map<string, string>() // old id → new id
+    for (const g of (parsed.groups ?? []) as Array<Record<string, unknown>>) {
+      if (typeof g.name !== 'string') continue
+      const created = await createGroup(doc, String(g.name), {
+        color: typeof g.color === 'string' ? g.color : undefined,
+        emoji: typeof g.emoji === 'string' ? g.emoji : undefined
+      })
+      if (typeof g.id === 'string') groupIdMap.set(g.id, created.id)
+    }
+
+    let imported = 0
+    for (const l of parsed.links as Array<Record<string, unknown>>) {
+      if (typeof l.url !== 'string') continue
+      const oldGroupId = typeof l.groupId === 'string' ? l.groupId : ''
+      await addLink(doc, {
+        url:         String(l.url),
+        title:       typeof l.title === 'string' ? l.title : '',
+        groupId:     groupIdMap.get(oldGroupId) ?? '',
+        tags:        Array.isArray(l.tags) ? (l.tags as string[]).filter((t) => typeof t === 'string') : [],
+        description: typeof l.description === 'string' ? l.description : undefined,
+        image:       typeof l.image       === 'string' ? l.image       : undefined,
+        favicon:     typeof l.favicon     === 'string' ? l.favicon     : undefined,
+        siteName:    typeof l.siteName    === 'string' ? l.siteName    : undefined
+      })
+      imported++
+    }
+
+    backupMessage.textContent = `Imported ${imported} link${imported === 1 ? '' : 's'} successfully.`
+    setTimeout(() => { backupMessage.textContent = '' }, 4000)
+  } catch {
+    backupMessage.textContent = 'Import failed — file could not be parsed.'
+  }
+})
+
+// ── Device ID: click to copy pairing code ────────────────────────
+
+deviceIdBtn.addEventListener('click', async () => {
+  const identity = await getDeviceIdentity()
+  try {
+    await navigator.clipboard.writeText(identity.deviceId)
+    const codeEl = document.querySelector<HTMLElement>('#device-pairing-code')
+    if (codeEl) {
+      const prev = codeEl.textContent
+      codeEl.textContent = 'Copied!'
+      setTimeout(() => { codeEl.textContent = prev }, 1500)
+    }
+  } catch { /* clipboard not available */ }
+})
+
+// ── Periodic WebRTC peer count refresh ───────────────────────────
+
+setInterval(() => { syncStatus?.update() }, 5000)
+
+// Collection filters
+viewModeSelect.addEventListener('change', () => renderLinks())
+groupFilter.addEventListener('change',    () => renderLinks())
+tagFilter.addEventListener('input',       () => renderLinks())
 
 clearFiltersBtn.addEventListener('click', () => {
   groupFilter.value = ''
-  tagFilter.value = ''
-  void renderLinks()
+  tagFilter.value   = ''
+  renderLinks()
 })
 
-window.addEventListener('online', () => void syncPendingLinks())
+// ── Boot sequence ─────────────────────────────────────────────────
 
-// ── Initial boot ─────────────────────────────────────────────────
+const SYNC_URL = import.meta.env.VITE_SYNC_URL as string | undefined
+  ?? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/sync`
 
-if (session || offlineOnlyMode) {
-  updateGreeting(session?.username ?? null)
-  setAuthUi(true)
-  modeSwitch.value = offlineOnlyMode ? 'offline' : 'account'
-  applyPendingSharedPayloadToForm(pendingSharedPayload, {
-    urlInput,
-    titleInput,
-    saveMessage,
-    composerCard,
-    mobileMedia
-  })
+const boot = async () => {
+  // Phase 3: load or create the device vault key
+  await initVaultCrypto()
 
-  void (async () => {
-    try {
-      if (!offlineOnlyMode) {
-        await loadServerLinks()
-        await syncPendingLinks()
-      }
-      await renderLinks()
-    } catch (error) {
-      if (error instanceof Error && error.message === 'AUTH_EXPIRED') {
-        clearSession()
-        setAuthUi(false)
-        authMessage.textContent = 'Session expired. Please login again.'
-        return
-      }
-      authMessage.textContent = 'Could not refresh data right now. Please try again.'
-      await renderLinks()
+  // Phase 2.5: load or generate device ECDH identity + show pairing code
+  const identity = await getDeviceIdentity()
+  const pairingCodeEl = document.querySelector<HTMLElement>('#device-pairing-code')
+  if (pairingCodeEl) pairingCodeEl.textContent = identity.pairingCode
+
+  // Wait for Yjs to replay persisted vault from IndexedDB
+  await vaultReady
+
+  const pendingPayload = parseSharedPayloadFromLocation(window.location, window.history)
+
+  if (session) {
+    // Switch to user-specific vault so this account is fully isolated from others on this device
+    console.log('[boot] boot: switching vault to user:', session.username)
+    detachVaultObservers(doc)
+    doc = await switchVault(session.username)
+    attachVaultObservers(doc)
+    console.log('[boot] boot: vault switched, doc guid:', doc.guid)
+
+    // Phase 4: connect WebRTC for live P2P sync with other devices logged in as same user
+    const provider = connectSync(`bnkr-vault-${session.username}`, SYNC_URL)
+    provider.on('status', () => syncStatus?.update())
+    provider.on('sync',   () => syncStatus?.update())
+
+    // Seed starter groups for brand-new user vaults
+    const [seedLinks, seedGroups] = await Promise.all([getLinks(doc), getGroups(doc)])
+    if (seedLinks.length === 0 && seedGroups.length === 0) {
+      await createGroup(doc, 'Reading List')
+      await createGroup(doc, 'Resources')
+      await createGroup(doc, 'Tools')
+      await createGroup(doc, 'Inspiration')
     }
-  })()
-} else {
-  setAuthUi(false)
-  modeSwitch.value = 'account'
-  if (pendingSharedPayload) {
-    authMessage.textContent = 'Login/register or use Offline Mode to save the shared link.'
+
+    updateGreeting(session.username)
+    setAuthUi(true)
+    applyPendingSharedPayloadToForm(pendingPayload, {
+      urlInput, titleInput, saveMessage, openComposer: () => openModal('link')
+    })
+    renderLinks()
+  } else {
+    // Seed starter groups for anonymous vault
+    const [seedLinks, seedGroups] = await Promise.all([getLinks(doc), getGroups(doc)])
+    if (seedLinks.length === 0 && seedGroups.length === 0) {
+      await createGroup(doc, 'Reading List')
+      await createGroup(doc, 'Resources')
+      await createGroup(doc, 'Tools')
+      await createGroup(doc, 'Inspiration')
+    }
+
+    setAuthUi(false)
+    if (pendingPayload) {
+      authMessage.textContent = 'Login or tap "Continue without account" to save the shared link.'
+    }
   }
 }
 
-window.addEventListener('beforeunload', () => {
-  cleanupStatus?.()
-})
+void boot()
+
+window.addEventListener('beforeunload', () => { syncStatus?.cleanup() })

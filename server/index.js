@@ -1,11 +1,12 @@
+import { createServer } from 'http';
+import { WebSocketServer } from 'ws';
 import express from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+// Phase 4: WebSocket signalling for y-webrtc peer discovery.
 import {
-  createLink,
   createUser,
-  getLinksForUser,
   getUserByUsername,
   initializeDatabase
 } from './db.js';
@@ -273,57 +274,141 @@ app.post('/api/auth/login', async (req, res) => {
   });
 });
 
-app.get('/api/links', authRequired, (req, res) => {
-  const groupName = normalizeOptionalText(req.query.group);
-  const tag = normalizeOptionalText(req.query.tag).toLowerCase();
+// ── Phase 4: WebSocket servers ────────────────────────────────────
+//
+// /signal  — y-webrtc signalling (kept for reference, unused by client now)
+// /sync    — y-websocket binary relay for live Yjs sync between devices
 
-  const links = getLinksForUser(req.user.id, {
-    groupName: groupName || undefined,
-    tag: tag || undefined
-  });
+const httpServer = createServer(app);
 
-  res.json({ links });
+// Both servers use noServer so we route upgrades manually
+const wss     = new WebSocketServer({ noServer: true }); // signalling
+const syncWss = new WebSocketServer({ noServer: true }); // y-websocket relay
+
+httpServer.on('upgrade', (req, socket, head) => {
+  const pathname = req.url?.split('?')[0] ?? '';
+  if (pathname === '/signal') {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  } else if (pathname.startsWith('/sync')) {
+    syncWss.handleUpgrade(req, socket, head, (ws) => syncWss.emit('connection', ws, req));
+  } else {
+    socket.destroy();
+  }
 });
 
-app.post('/api/links', authRequired, (req, res) => {
-  const { url, title, description, image, favicon, siteName, group, tags } = req.body ?? {};
+// ── y-websocket binary relay (/sync) ─────────────────────────────
+//
+// y-websocket client connects to ws://host/sync with the room name
+// passed as the second argument to WebsocketProvider, which appends it
+// to the URL as the path segment: ws://host/sync/<room>.
+// The server just relays binary Yjs messages between all clients in the
+// same room. It never decodes the messages — vault data stays encrypted.
 
-  if (typeof url !== 'string' || !url.trim()) {
-    res.status(400).json({ error: 'url is required' });
-    return;
-  }
+/** @type {Map<string, Set<WebSocket>>} room → connected sockets */
+const syncRooms = new Map();
 
-  try {
-    new URL(url);
-  } catch {
-    res.status(400).json({ error: 'url must be a valid URL' });
-    return;
-  }
+syncWss.on('connection', (ws, req) => {
+  // Room name is the last path segment after /sync/
+  const room = (req.url ?? '/').replace(/^\/sync\/?/, '') || 'default';
+  console.log(`[sync] client joined room="${room}"  peers=${(syncRooms.get(room)?.size ?? 0) + 1}`);
 
-  const normalizedGroup = normalizeOptionalText(group);
-  const normalizedTags = normalizeTags(tags);
+  if (!syncRooms.has(room)) syncRooms.set(room, new Set());
+  syncRooms.get(room).add(ws);
 
-  const link = createLink(req.user.id, {
-    url: url.trim(),
-    title: normalizeOptionalText(title),
-    description: normalizeOptionalText(description),
-    image: normalizeOptionalText(image),
-    favicon: normalizeOptionalText(favicon),
-    siteName: normalizeOptionalText(siteName),
-    groupName: normalizedGroup,
-    tags: normalizedTags
+  ws.on('message', (data, isBinary) => {
+    const peers = syncRooms.get(room);
+    if (!peers) return;
+    for (const peer of peers) {
+      if (peer !== ws && peer.readyState === 1 /* OPEN */) {
+        peer.send(data, { binary: isBinary });
+      }
+    }
   });
 
-  res.status(201).json({ link });
+  ws.on('close', () => {
+    const peers = syncRooms.get(room);
+    if (peers) {
+      peers.delete(ws);
+      if (peers.size === 0) syncRooms.delete(room);
+    }
+    console.log(`[sync] client left  room="${room}"  peers=${syncRooms.get(room)?.size ?? 0}`);
+  });
+
+  ws.on('error', (err) => console.error(`[sync] ws error room="${room}"`, err.message));
+});
+
+// ── y-webrtc signalling relay (/signal) ──────────────────────────
+
+/** @type {Map<string, Set<WebSocket>>} topic → connected sockets */
+const topics = new Map();
+
+wss.on('connection', (conn) => {
+  /** @type {Set<string>} */
+  const myTopics = new Set();
+  let alive = true;
+
+  const ping = setInterval(() => {
+    if (!alive) { conn.close(); return; }
+    alive = false;
+    try { conn.ping(); } catch { conn.close(); }
+  }, 30_000);
+
+  conn.on('pong', () => { alive = true; });
+
+  conn.on('close', () => {
+    clearInterval(ping);
+    myTopics.forEach((topic) => {
+      const subs = topics.get(topic);
+      if (subs) {
+        subs.delete(conn);
+        if (subs.size === 0) topics.delete(topic);
+      }
+    });
+    myTopics.clear();
+  });
+
+  conn.on('message', (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+    if (msg.type === 'subscribe') {
+      for (const topic of (msg.topics ?? [])) {
+        if (!topics.has(topic)) topics.set(topic, new Set());
+        topics.get(topic).add(conn);
+        myTopics.add(topic);
+        console.log(`[signal] subscribe  topic="${topic}"  total=${topics.get(topic).size}`);
+      }
+    } else if (msg.type === 'unsubscribe') {
+      for (const topic of (msg.topics ?? [])) {
+        topics.get(topic)?.delete(conn);
+        myTopics.delete(topic);
+        console.log(`[signal] unsubscribe topic="${topic}"  remaining=${topics.get(topic)?.size ?? 0}`);
+      }
+    } else if (msg.type === 'publish') {
+      const subs = topics.get(msg.topic);
+      const recipients = subs ? [...subs].filter(p => p !== conn && p.readyState === 1).length : 0;
+      console.log(`[signal] publish     topic="${msg.topic}"  subtype=${msg.data?.type ?? '?'}  recipients=${recipients}`);
+      if (subs) {
+        const payload = JSON.stringify({ ...msg, clients: subs.size });
+        subs.forEach((peer) => {
+          if (peer !== conn && peer.readyState === 1 /* OPEN */) {
+            peer.send(payload);
+          }
+        });
+      }
+    } else if (msg.type === 'ping') {
+      conn.send(JSON.stringify({ type: 'pong' }));
+    }
+  });
 });
 
 initializeDatabase()
   .then(() => {
-    const server = app.listen(port, () => {
-      console.log(`API listening on http://localhost:${port}`);
+    httpServer.listen(port, () => {
+      console.log(`API + signalling listening on http://localhost:${port}`);
     });
 
-    server.on('error', (error) => {
+    httpServer.on('error', (error) => {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'EADDRINUSE') {
         console.error(`Port ${port} is already in use. Stop the existing server and retry.`);
         process.exit(1);

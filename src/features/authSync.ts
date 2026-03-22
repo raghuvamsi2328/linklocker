@@ -1,116 +1,107 @@
-import { getUnsyncedLinks, markLinkSynced, type LocalLink } from '../db'
+/**
+ * authSync.ts — Server authentication + offline fallback.
+ *
+ * Phase 2: On every successful server login, credentials are cached in
+ *           IndexedDB (PBKDF2 hash + salt). When offline, the app falls
+ *           back to local validation and returns the cached JWT.
+ * Phase 4: WebRTC signalling connection will be added here.
+ */
+
 import type { AppSession } from './sessionMode'
+import { cacheAuthCredentials, validateOfflineCreds } from './offlineAuth'
 
-export type ServerLink = {
-  id: number
-  user_id: number
-  url: string
-  title: string
-  description?: string
-  image?: string
-  favicon?: string
-  site_name?: string
-  group_name: string | null
-  tags: string[]
-  created_at: string
-  synced_at: string
-}
+// ── Helpers ────────────────────────────────────────────────────────
 
-export const authorizedFetchWithSession = async (
-  session: AppSession,
-  input: string,
-  init: RequestInit = {}
-): Promise<Response> => {
-  const headers = new Headers(init.headers)
-  headers.set('Authorization', `Bearer ${session.token}`)
-
-  return fetch(input, {
-    ...init,
-    headers
+async function postJson(path: string, body: Record<string, string>): Promise<Response> {
+  return fetch(`/api${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
   })
 }
 
-export const authenticateWithCredentials = async (
+function isNetworkError(err: unknown): boolean {
+  return err instanceof TypeError && /fetch|network|failed/i.test((err as TypeError).message)
+}
+
+// ── Online auth ────────────────────────────────────────────────────
+
+/**
+ * Authenticates against the server. On success, caches credentials in
+ * IndexedDB so the user can log in offline next time.
+ */
+export async function authenticateWithCredentials(
   mode: 'login' | 'register',
   username: string,
   password: string
-): Promise<AppSession> => {
-  const response = await fetch(`/api/auth/${mode}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ username, password })
+): Promise<AppSession> {
+  const res = await postJson(`/auth/${mode}`, { username, password })
+  const data = (await res.json()) as {
+    error?: string
+    token?: string
+    user?: { username: string }
+  }
+
+  if (!res.ok) {
+    throw new Error(data.error ?? (mode === 'login' ? 'Login failed' : 'Registration failed'))
+  }
+
+  if (!data.token || !data.user?.username) {
+    throw new Error('Invalid server response')
+  }
+
+  const session: AppSession = { token: data.token, username: data.user.username }
+
+  // Cache credentials for offline login (fire-and-forget — never blocks the UI)
+  cacheAuthCredentials(username, password, data.token).catch(() => {
+    // Storage errors are non-fatal
   })
 
-  const payload = (await response.json()) as { token?: string; user?: { username: string }; error?: string }
-
-  if (!response.ok || !payload.token || !payload.user) {
-    throw new Error(payload.error ?? `${mode} failed`)
-  }
-
-  return {
-    token: payload.token,
-    username: payload.user.username
-  }
+  return session
 }
 
-export const fetchServerLinksForSession = async (session: AppSession): Promise<ServerLink[]> => {
-  const response = await authorizedFetchWithSession(session, '/api/links')
+// ── Offline auth fallback ──────────────────────────────────────────
 
-  if (response.status === 401) {
-    throw new Error('AUTH_EXPIRED')
+/**
+ * Validates credentials against the local IndexedDB cache.
+ * Returns an AppSession using the cached JWT, or throws if credentials
+ * are wrong or no cache exists for this username.
+ */
+export async function authenticateOffline(
+  username: string,
+  password: string
+): Promise<AppSession> {
+  const token = await validateOfflineCreds(username, password)
+
+  if (!token) {
+    throw new Error('No offline credentials found. Please sign in while connected.')
   }
 
-  if (!response.ok) {
-    throw new Error('Failed to fetch links')
-  }
-
-  const payload = (await response.json()) as { links: ServerLink[] }
-  return payload.links
+  return { token, username }
 }
 
-export const createServerLinkForSession = async (
-  session: AppSession,
-  link: Pick<LocalLink, 'url' | 'title' | 'group' | 'tags' | 'description' | 'image' | 'favicon' | 'siteName'>
-): Promise<ServerLink> => {
-  const response = await authorizedFetchWithSession(session, '/api/links', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      url: link.url,
-      title: link.title,
-      description: link.description,
-      image: link.image,
-      favicon: link.favicon,
-      siteName: link.siteName,
-      group: link.group,
-      tags: link.tags
-    })
-  })
+// ── Combined auth (online → offline fallback) ──────────────────────
 
-  if (!response.ok) {
-    throw new Error('Server rejected save')
-  }
-
-  const payload = (await response.json()) as { link: ServerLink }
-  return payload.link
-}
-
-export const syncPendingLinksForSession = async (session: AppSession): Promise<void> => {
-  const pending = await getUnsyncedLinks()
-  if (pending.length === 0) {
-    return
-  }
-
-  for (const link of pending) {
-    try {
-      const created = await createServerLinkForSession(session, link)
-      await markLinkSynced(link.id, created.id)
-    } catch {
-      // Keep unsynced records for later retries.
+/**
+ * Tries the server first. If the request fails due to a network error
+ * (not a 4xx), falls back to the offline credential cache.
+ *
+ * Registration always requires a network connection.
+ */
+export async function authenticate(
+  mode: 'login' | 'register',
+  username: string,
+  password: string
+): Promise<{ session: AppSession; wasOffline: boolean }> {
+  try {
+    const session = await authenticateWithCredentials(mode, username, password)
+    return { session, wasOffline: false }
+  } catch (err) {
+    if (mode === 'register' || !isNetworkError(err)) {
+      throw err
     }
+    // Network is down — try offline cache
+    const session = await authenticateOffline(username, password)
+    return { session, wasOffline: true }
   }
 }
