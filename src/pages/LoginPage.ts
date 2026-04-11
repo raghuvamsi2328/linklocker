@@ -22,6 +22,46 @@ export function renderLoginPageHtml(): string {
             <span>Fully offline capable</span>
           </li>
         </ul>
+
+        <div class="login-install-panel">
+          <div class="login-install-header">
+            <div class="login-install-icon-wrap">
+              <span class="material-symbols-rounded" aria-hidden="true">download</span>
+            </div>
+            <div>
+              <p class="login-install-title">Install BNKR</p>
+              <p class="login-install-copy">Add BNKR to your home screen for quick access and offline use.</p>
+            </div>
+          </div>
+
+          <button id="landing-install-btn" type="button" class="login-install-btn" hidden>
+            Add to Home Screen
+          </button>
+
+          <div class="login-install-grid">
+            <div class="login-install-step">
+              <span class="material-symbols-rounded" aria-hidden="true">phone_android</span>
+              <div>
+                <strong>Android</strong>
+                <p>Best experience in <strong>Chrome</strong>: open the browser menu and choose <strong>Add to Home screen</strong>.</p>
+              </div>
+            </div>
+            <div class="login-install-step">
+              <span class="material-symbols-rounded" aria-hidden="true">phone_iphone</span>
+              <div>
+                <strong>iOS</strong>
+                <p>Open the Share menu and tap <strong>Add to Home Screen</strong>.</p>
+              </div>
+            </div>
+            <div class="login-install-step">
+              <span class="material-symbols-rounded" aria-hidden="true">share</span>
+              <div>
+                <strong>Share links</strong>
+                <p>Share from your browser and open BNKR to save links directly.</p>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div class="login-card">

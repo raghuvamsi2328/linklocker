@@ -33,6 +33,8 @@ import {
   clearStoredSession,
   getStoredSession,
   storeSession,
+  getStoredOfflineMode,
+  setStoredOfflineMode,
   type AppSession
 } from './features/sessionMode'
 import { applyPendingSharedPayloadToForm } from './features/uiState'
@@ -77,6 +79,7 @@ const registerBtn     = document.querySelector<HTMLButtonElement>('#register-btn
 const offlineModeBtn  = document.querySelector<HTMLButtonElement>('#offline-mode-btn')!
 const authMessage     = document.querySelector<HTMLElement>('#auth-message')!
 const installBtn      = document.querySelector<HTMLButtonElement>('#install-btn')!
+const landingInstallBtn = document.querySelector<HTMLButtonElement>('#landing-install-btn')!
 const logoutBtn       = document.querySelector<HTMLButtonElement>('#logout-btn')!
 const linkForm        = document.querySelector<HTMLFormElement>('#link-form')!
 const saveMessage     = document.querySelector<HTMLElement>('#save-message')!
@@ -141,6 +144,35 @@ let deferredInstallPrompt: InstallPromptEvent | null = null
 let latestMetadata: { url: string; description: string; image: string; favicon: string; siteName: string } | null = null
 let syncStatus: { cleanup: () => void; update: () => void } | null = null
 
+// ── Greetings in multiple languages ──────────────────────────────
+
+const GREETINGS = [
+  'Hello',           // English
+  'Hola',            // Spanish
+  'Bonjour',         // French
+  'Ciao',            // Italian
+  'Hallo',           // German
+  'Olá',             // Portuguese
+  'Привет',          // Russian
+  '你好',            // Mandarin Chinese
+  'こんにちは',      // Japanese
+  '안녕하세요',      // Korean
+  'สวัสดี',          // Thai
+  'مرحبا',           // Arabic
+  'שלום',            // Hebrew
+  'Γεια σας',        // Greek
+  'Namaste',         // Hindi
+  'Sawubona',        // Zulu
+  'Terve',           // Finnish
+  'Hej',             // Swedish
+  'Goedendag',       // Dutch
+  'Ahoj',            // Czech
+]
+
+const getRandomGreeting = (): string => {
+  return GREETINGS[Math.floor(Math.random() * GREETINGS.length)]
+}
+
 // ── Sync status ──────────────────────────────────────────────────
 
 syncStatus = attachSyncStatus(syncStatusEl, getSync)
@@ -149,7 +181,10 @@ syncStatus = attachSyncStatus(syncStatusEl, getSync)
 
 const updateGreeting = (username: string | null) => {
   const el = document.querySelector<HTMLElement>('#app-greeting')
-  if (el) el.textContent = username ? `Hello, ${username}!` : 'Hello!'
+  if (el) {
+    const greeting = getRandomGreeting()
+    el.textContent = username ? `${greeting}, ${username}!` : `${greeting}!`
+  }
 }
 
 const updateStats = (rows: LinkRow[]) => {
@@ -271,6 +306,7 @@ loginBtn.addEventListener('click',  async (e) => { e.preventDefault(); if (!auth
 registerBtn.addEventListener('click', async () => { await runAuth('register') })
 
 offlineModeBtn.addEventListener('click', () => {
+  setStoredOfflineMode(true)
   setAuthUi(true)
   applyPendingSharedPayloadToForm(parseSharedPayloadFromLocation(window.location, window.history), {
     urlInput, titleInput, saveMessage, openComposer: () => openModal('link')
@@ -500,25 +536,42 @@ window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault()
   deferredInstallPrompt = event as InstallPromptEvent
   installBtn.hidden = false
+  landingInstallBtn.hidden = false
+})
+
+landingInstallBtn.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return
+  await deferredInstallPrompt.prompt()
+  const choice = await deferredInstallPrompt.userChoice
+  if (choice.outcome === 'accepted') {
+    landingInstallBtn.hidden = true
+    installBtn.hidden = true
+  }
+  deferredInstallPrompt = null
 })
 
 installBtn.addEventListener('click', async () => {
   if (!deferredInstallPrompt) return
   await deferredInstallPrompt.prompt()
   const choice = await deferredInstallPrompt.userChoice
-  if (choice.outcome === 'accepted') installBtn.hidden = true
+  if (choice.outcome === 'accepted') {
+    installBtn.hidden = true
+    landingInstallBtn.hidden = true
+  }
   deferredInstallPrompt = null
 })
 
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null
   installBtn.hidden = true
+  landingInstallBtn.hidden = true
 })
 
-// Logout — clear session, credential cache, and WebRTC connection
+// Logout — clear session, credential cache, offline mode, and WebRTC connection
 logoutBtn.addEventListener('click', () => {
   session = null
   clearStoredSession()
+  setStoredOfflineMode(false)
   clearAuthCache().catch(() => {})
   disconnectSync()
   syncStatus?.update()
@@ -665,21 +718,24 @@ const boot = async () => {
   await vaultReady
 
   const pendingPayload = parseSharedPayloadFromLocation(window.location, window.history)
+  const isOfflineMode = getStoredOfflineMode()
 
-  if (session) {
+  if (session || isOfflineMode) {
     // Switch to user-specific vault so this account is fully isolated from others on this device
-    console.log('[boot] boot: switching vault to user:', session.username)
-    detachVaultObservers(doc)
-    doc = await switchVault(session.username)
-    attachVaultObservers(doc)
-    console.log('[boot] boot: vault switched, doc guid:', doc.guid)
+    if (session) {
+      console.log('[boot] boot: switching vault to user:', session.username)
+      detachVaultObservers(doc)
+      doc = await switchVault(session.username)
+      attachVaultObservers(doc)
+      console.log('[boot] boot: vault switched, doc guid:', doc.guid)
 
-    // Phase 4: connect WebRTC for live P2P sync with other devices logged in as same user
-    const provider = connectSync(`bnkr-vault-${session.username}`, SYNC_URL)
-    provider.on('status', () => syncStatus?.update())
-    provider.on('sync',   () => syncStatus?.update())
+      // Phase 4: connect WebRTC for live P2P sync with other devices logged in as same user
+      const provider = connectSync(`bnkr-vault-${session.username}`, SYNC_URL)
+      provider.on('status', () => syncStatus?.update())
+      provider.on('sync',   () => syncStatus?.update())
+    }
 
-    // Seed starter groups for brand-new user vaults
+    // Seed starter groups for brand-new user vaults (or offline mode)
     const [seedLinks, seedGroups] = await Promise.all([getLinks(doc), getGroups(doc)])
     if (seedLinks.length === 0 && seedGroups.length === 0) {
       await createGroup(doc, 'Reading List')
@@ -688,7 +744,11 @@ const boot = async () => {
       await createGroup(doc, 'Inspiration')
     }
 
-    updateGreeting(session.username)
+    if (session) {
+      updateGreeting(session.username)
+    } else if (isOfflineMode) {
+      updateGreeting(null) // Show generic greeting in offline mode
+    }
     setAuthUi(true)
     applyPendingSharedPayloadToForm(pendingPayload, {
       urlInput, titleInput, saveMessage, openComposer: () => openModal('link')

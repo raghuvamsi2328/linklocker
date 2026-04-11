@@ -410,3 +410,96 @@
     padding: 2.25rem;
   }
 }
+
+.login-install-panel {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 18px;
+  padding: 1rem 1rem 0.9rem;
+  display: grid;
+  gap: 0.9rem;
+  color: #F4FBF4;
+}
+
+.login-install-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+}
+
+.login-install-icon-wrap {
+  min-width: 3rem;
+  min-height: 3rem;
+  display: grid;
+  place-content: center;
+  background: rgba(90, 155, 130, 0.18);
+  border-radius: 14px;
+}
+
+.login-install-icon-wrap .material-symbols-rounded {
+  color: #DFF4EA;
+  font-size: 1.4rem;
+}
+
+.login-install-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 800;
+  color: #FFFFFF;
+}
+
+.login-install-copy {
+  margin: 0.25rem 0 0;
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.login-install-btn {
+  width: fit-content;
+  padding: 0.75rem 1rem;
+  border: none;
+  border-radius: 999px;
+  background: #FFFFFF;
+  color: #1B2E2A;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 12px 30px rgba(28, 26, 42, 0.08);
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.login-install-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 16px 34px rgba(28, 26, 42, 0.12);
+}
+
+.login-install-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.login-install-step {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+  font-size: 0.9rem;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.login-install-step .material-symbols-rounded {
+  font-size: 1.2rem;
+  color: #A7F1C5;
+  margin-top: 0.15rem;
+}
+
+.login-install-step strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: #FFFFFF;
+}
+
+.login-install-step p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.78);
+  line-height: 1.45;
+}
