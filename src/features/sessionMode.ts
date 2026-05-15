@@ -7,6 +7,7 @@ const TOKEN_KEY = 'token'
 const USERNAME_KEY = 'username'
 const LEGACY_EMAIL_KEY = 'email'
 const OFFLINE_MODE_KEY = 'offline-only-mode'
+const OFFLINE_DISPLAY_NAME_KEY = 'offline-display-name'
 
 export const getStoredSession = (): AppSession | null => {
   const storedToken = localStorage.getItem(TOKEN_KEY)
@@ -45,4 +46,19 @@ export const setStoredOfflineMode = (enabled: boolean): void => {
   }
 
   localStorage.removeItem(OFFLINE_MODE_KEY)
+}
+
+export const getStoredOfflineDisplayName = (): string | null => {
+  const raw = localStorage.getItem(OFFLINE_DISPLAY_NAME_KEY)
+  const trimmed = raw?.trim() ?? ''
+  return trimmed || null
+}
+
+export const setStoredOfflineDisplayName = (name: string): void => {
+  const trimmed = name.trim()
+  if (!trimmed) {
+    localStorage.removeItem(OFFLINE_DISPLAY_NAME_KEY)
+    return
+  }
+  localStorage.setItem(OFFLINE_DISPLAY_NAME_KEY, trimmed)
 }

@@ -15,14 +15,15 @@ import { renderLoginPageHtml } from './pages/LoginPage'
 import { renderAppPageHtml } from './pages/AppPage'
 import { initVault, switchVault, connectSync, disconnectSync, getSync } from './yjsStore'
 import { addLink, updateLink, getLinks, deleteLink } from './data/links'
-import { createGroup, getGroups, findOrCreateGroup } from './data/groups'
+import { createGroup, getGroups } from './data/groups'
 import { attachSyncStatus } from './syncStatus'
 import { authenticate, registerDeviceWithServer, verifyPairingCode } from './features/authSync'
 import { clearAuthCache, updateCachedToken } from './features/offlineAuth'
 import { initVaultCrypto, deriveKeyFromCredentials } from './features/vaultCrypto'
 import { getDeviceIdentity } from './features/deviceIdentity'
 import { applyGroupFilterOptions, buildLinkRows, renderBoardHtml } from './features/board'
-import { renderHomeGroups, renderHomeRecentLinks } from './features/homePreview'
+import { renderHomeGroups, renderHomeRecentLinks, renderHomeRecentVisitedLinks } from './features/homePreview'
+import { getRecentVisitedLinks, trackRecentVisit } from './features/recentVisits'
 import {
   detectMetadata,
   deriveFallbackTitle,
@@ -34,7 +35,9 @@ import {
   clearStoredSession,
   getStoredSession,
   storeSession,
+  getStoredOfflineDisplayName,
   getStoredOfflineMode,
+  setStoredOfflineDisplayName,
   setStoredOfflineMode,
   type AppSession
 } from './features/sessionMode'
@@ -93,6 +96,39 @@ app.innerHTML = `
       <button id="pairing-cancel-btn" type="button" class="pairing-cancel-btn">Cancel — sign out</button>
     </div>
   </div>
+
+  <div id="move-group-overlay" class="move-group-overlay" hidden>
+    <div class="move-group-sheet" role="dialog" aria-modal="true" aria-labelledby="move-group-title">
+      <div class="move-group-head">
+        <h3 id="move-group-title" class="move-group-title">Move Link To</h3>
+        <button id="move-group-close" type="button" class="move-group-close" aria-label="Close move group picker">
+          <span class="material-symbols-rounded" aria-hidden="true">close</span>
+        </button>
+      </div>
+      <div id="move-group-options" class="move-group-options"></div>
+      <button id="move-group-cancel" type="button" class="move-group-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <div id="offline-name-overlay" class="offline-name-overlay" hidden>
+    <div class="offline-name-sheet" role="dialog" aria-modal="true" aria-labelledby="offline-name-title">
+      <h3 id="offline-name-title" class="offline-name-title">How should we call you?</h3>
+      <p class="offline-name-copy">This name is only used locally for greetings in offline mode.</p>
+      <input
+        id="offline-name-input"
+        class="offline-name-input"
+        type="text"
+        maxlength="32"
+        placeholder="Your name"
+        autocomplete="nickname"
+      />
+      <p id="offline-name-error" class="offline-name-error" hidden></p>
+      <div class="offline-name-actions">
+        <button id="offline-name-cancel" type="button" class="offline-name-btn offline-name-btn--ghost">Cancel</button>
+        <button id="offline-name-continue" type="button" class="offline-name-btn offline-name-btn--primary">Continue Offline</button>
+      </div>
+    </div>
+  </div>
 `
 
 // ── Element queries ──────────────────────────────────────────────
@@ -113,7 +149,7 @@ const saveMessage     = document.querySelector<HTMLElement>('#save-message')!
 const linkBoard       = document.querySelector<HTMLElement>('#link-board')!
 const urlInput        = document.querySelector<HTMLInputElement>('#link-url')!
 const titleInput      = document.querySelector<HTMLInputElement>('#link-title')!
-const groupInput      = document.querySelector<HTMLInputElement>('#link-group')!
+const groupInput      = document.querySelector<HTMLSelectElement>('#link-group')!
 const tagsInput       = document.querySelector<HTMLInputElement>('#link-tags')!
 const metadataBtn     = document.querySelector<HTMLButtonElement>('#metadata-btn')!
 const viewModeSelect  = document.querySelector<HTMLSelectElement>('#view-mode')!
@@ -137,6 +173,19 @@ const homeQuote = document.querySelector<HTMLElement>('#home-quote')
 const homePreview = document.querySelector<HTMLElement>('#home-preview')
 const homeGroupsPreview = document.querySelector<HTMLElement>('#home-groups-preview')
 const homeRecentPreview = document.querySelector<HTMLElement>('#home-recent-preview')
+const homeRecentVisitedPreview = document.querySelector<HTMLElement>('#home-recent-visited-preview')
+const moveGroupOverlay = document.querySelector<HTMLElement>('#move-group-overlay')!
+const moveGroupOptions = document.querySelector<HTMLElement>('#move-group-options')!
+const moveGroupCloseBtn = document.querySelector<HTMLButtonElement>('#move-group-close')!
+const moveGroupCancelBtn = document.querySelector<HTMLButtonElement>('#move-group-cancel')!
+const offlineNameOverlay = document.querySelector<HTMLElement>('#offline-name-overlay')!
+const offlineNameInput = document.querySelector<HTMLInputElement>('#offline-name-input')!
+const offlineNameError = document.querySelector<HTMLElement>('#offline-name-error')!
+const offlineNameCancelBtn = document.querySelector<HTMLButtonElement>('#offline-name-cancel')!
+const offlineNameContinueBtn = document.querySelector<HTMLButtonElement>('#offline-name-continue')!
+
+const CREATE_GROUP_OPTION_VALUE = '__create_group__'
+const MOVE_GROUP_NONE_VALUE = '__none__'
 
 // ── Rotating quotes ───────────────────────────────────────────────
 
@@ -187,11 +236,105 @@ const vibrateShort = () => {
 
 // ── Time-based greeting ─────────────────────────────────────────
 
-const getTimeGreeting = (): string => {
-  const hour = new Date().getHours()
-  if (hour < 12) return 'Good morning'
-  if (hour < 18) return 'Good afternoon'
-  return 'Good evening'
+type GreetingVariant = {
+  withName: (name: string, now: Date) => string
+  withoutName: (now: Date) => string
+}
+
+const WEEKDAY = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+
+const GREETING_VARIANTS: Record<'lateNight' | 'freshMorning' | 'standardDay' | 'windDown', GreetingVariant[]> = {
+  lateNight: [
+    {
+      withName: (name) => `Burning the midnight oil, ${name}? 🦉`,
+      withoutName: () => 'Burning the midnight oil? 🦉'
+    },
+    {
+      withName: (name) => `Should you not be asleep right now, ${name}?`,
+      withoutName: () => 'Should you not be asleep right now?'
+    },
+    {
+      withName: (name) => `${name}, up late or up early?`,
+      withoutName: () => 'Up late or up early?'
+    },
+    {
+      withName: (name) => `Midnight mode activated. Welcome back, ${name}.`,
+      withoutName: () => 'Midnight mode activated. Welcome back.'
+    }
+  ],
+  freshMorning: [
+    {
+      withName: (name) => `Rise and grind, ${name}. ☕`,
+      withoutName: () => 'Rise and grind. ☕'
+    },
+    {
+      withName: (name) => `The early bird gets the code, ${name}.`,
+      withoutName: () => 'The early bird gets the code.'
+    },
+    {
+      withName: (name) => `Morning, ${name}! Fresh start.`,
+      withoutName: () => 'Morning! Fresh start.'
+    }
+  ],
+  standardDay: [
+    {
+      withName: (name, now) => `Happy ${WEEKDAY[now.getDay()]}, ${name}! Let us get it.`,
+      withoutName: (now) => `Happy ${WEEKDAY[now.getDay()]}! Let us get it.`
+    },
+    {
+      withName: (name) => `Crushing it today, ${name}?`,
+      withoutName: () => 'Crushing it today?'
+    },
+    {
+      withName: (name) => `Midday momentum, ${name}.`,
+      withoutName: () => 'Midday momentum.'
+    }
+  ],
+  windDown: [
+    {
+      withName: (name) => `Time to unwind, ${name}. 🌅`,
+      withoutName: () => 'Time to unwind. 🌅'
+    },
+    {
+      withName: (name) => `Cheers to the evening, ${name}.`,
+      withoutName: () => 'Cheers to the evening.'
+    },
+    {
+      withName: (name) => `Late night vibes, ${name}. 🌙`,
+      withoutName: () => 'Late night vibes. 🌙'
+    }
+  ]
+}
+
+const pickGreeting = <T>(choices: readonly T[], now: Date): T => {
+  // Keep one stable funny greeting per hour to avoid flicker.
+  const daySeed = Math.floor(now.getTime() / 86_400_000)
+  const index = Math.abs(daySeed + now.getHours()) % choices.length
+  return choices[index]
+}
+
+const getGreetingText = (username: string | null): string => {
+  const now = new Date()
+  const hour = now.getHours()
+
+  const variantSet =
+    hour < 5
+      ? GREETING_VARIANTS.lateNight
+      : hour < 9
+        ? GREETING_VARIANTS.freshMorning
+        : hour < 17
+          ? GREETING_VARIANTS.standardDay
+          : GREETING_VARIANTS.windDown
+
+  const variant = pickGreeting(variantSet, now)
+  const trimmedName = (username ?? '').trim()
+
+  if (!trimmedName) return variant.withoutName(now)
+
+  const withName = variant.withName(trimmedName, now)
+  const maxLength = window.innerWidth <= 480 ? 36 : 54
+  if (trimmedName.length > 14 || withName.length > maxLength) return variant.withoutName(now)
+  return withName
 }
 
 // ── Sync status ──────────────────────────────────────────────────
@@ -206,8 +349,7 @@ const updateGreeting = (username: string | null) => {
   currentGreetingUser = username
   const el = document.querySelector<HTMLElement>('#app-greeting')
   if (el) {
-    const greeting = getTimeGreeting()
-    el.textContent = username ? `${greeting}, ${username}` : greeting
+    el.textContent = getGreetingText(username)
   }
 }
 
@@ -218,9 +360,14 @@ const scheduleGreetingRefresh = () => {
   const next = new Date(now)
   const hour = now.getHours()
 
-  if (hour < 12) next.setHours(12, 0, 0, 0)
-  else if (hour < 18) next.setHours(18, 0, 0, 0)
-  else next.setDate(next.getDate() + 1), next.setHours(0, 0, 0, 0)
+  // Refresh at greeting boundaries: 00:00, 05:00, 09:00, 17:00
+  if (hour < 5) next.setHours(5, 0, 0, 0)
+  else if (hour < 9) next.setHours(9, 0, 0, 0)
+  else if (hour < 17) next.setHours(17, 0, 0, 0)
+  else {
+    next.setDate(next.getDate() + 1)
+    next.setHours(0, 0, 0, 0)
+  }
 
   const delayMs = Math.max(1000, next.getTime() - now.getTime())
   greetingRefreshTimer = window.setTimeout(() => {
@@ -246,25 +393,90 @@ const setAuthUi = (loggedIn: boolean) => {
 
 // ── Board render ──────────────────────────────────────────────────
 
+const applyLinkGroupOptions = async () => {
+  const groups = await getGroups(doc)
+  const current = groupInput.value
+  groupInput.innerHTML = '<option value="">No Group</option>'
+
+  for (const group of groups) {
+    const option = document.createElement('option')
+    option.value = group.id
+    option.textContent = `${group.emoji} ${group.name}`
+    groupInput.append(option)
+  }
+
+  const createOption = document.createElement('option')
+  createOption.value = CREATE_GROUP_OPTION_VALUE
+  createOption.textContent = '+ Create new group'
+  groupInput.append(createOption)
+
+  if (current && groups.some((group) => group.id === current)) {
+    groupInput.value = current
+  } else {
+    groupInput.value = ''
+  }
+}
+
+let moveGroupResolve: ((value: string | null) => void) | null = null
+
+const closeMoveGroupSheet = (value: string | null) => {
+  if (moveGroupOverlay.hidden) return
+  moveGroupOverlay.hidden = true
+  document.body.style.overflow = ''
+  const resolve = moveGroupResolve
+  moveGroupResolve = null
+  if (resolve) resolve(value)
+}
+
+const openMoveGroupSheet = async (currentGroupId: string): Promise<string | null> => {
+  const groups = await getGroups(doc)
+  const options = [
+    { id: MOVE_GROUP_NONE_VALUE, label: 'No Group', emoji: '📎' },
+    ...groups.map((group) => ({ id: group.id, label: group.name, emoji: group.emoji }))
+  ]
+
+  moveGroupOptions.innerHTML = options.map((option) => {
+    const isCurrent = (option.id === MOVE_GROUP_NONE_VALUE && !currentGroupId) || option.id === currentGroupId
+    return `
+      <button type="button" class="move-group-option${isCurrent ? ' is-current' : ''}" data-move-group-id="${option.id}">
+        <span class="move-group-option-emoji">${option.emoji}</span>
+        <span class="move-group-option-label">${option.label}</span>
+        ${isCurrent ? '<span class="move-group-option-current">Current</span>' : ''}
+      </button>`
+  }).join('')
+
+  moveGroupOverlay.hidden = false
+  document.body.style.overflow = 'hidden'
+
+  return new Promise<string | null>((resolve) => {
+    moveGroupResolve = resolve
+  })
+}
+
 const renderLinks = () => {
   void (async () => {
     const links  = await getLinks(doc)
     const groups = await getGroups(doc)
     const rows   = buildLinkRows(links, groups)
     applyGroupFilterOptions(groupFilter, rows)
+    await applyLinkGroupOptions()
 
     const selectedGroup = groupFilter.value
     const tagNeedle     = tagFilter.value.trim().toLowerCase()
     const mode          = viewModeSelect.value === 'tag' ? 'tag' : 'group'
-    const isEmptyVault  = rows.length === 0
+    const isEmptyVault  = links.length === 0  // Check total links, not filtered rows
 
     if (homeEmptyState) homeEmptyState.hidden = !isEmptyVault
     if (homeQuickActions) homeQuickActions.hidden = isEmptyVault
     if (homePreview) homePreview.hidden = isEmptyVault
     if (homeQuote) homeQuote.hidden = isEmptyVault
 
+    const visitScope = session?.username ?? getStoredOfflineDisplayName() ?? 'offline'
+    const recentVisitedLinks = getRecentVisitedLinks(visitScope, links)
+
     if (homeGroupsPreview) homeGroupsPreview.innerHTML = renderHomeGroups(groups, links)
     if (homeRecentPreview) homeRecentPreview.innerHTML = renderHomeRecentLinks(links)
+    if (homeRecentVisitedPreview) homeRecentVisitedPreview.innerHTML = renderHomeRecentVisitedLinks(recentVisitedLinks)
 
     linkBoard.innerHTML = renderBoardHtml(rows, selectedGroup, tagNeedle, mode, bucketOpenState)
   })()
@@ -438,13 +650,7 @@ loginBtn.addEventListener('click',  async (e) => { e.preventDefault(); if (!auth
 registerBtn.addEventListener('click', async () => { await runAuth('register') })
 
 offlineModeBtn.addEventListener('click', () => {
-  setStoredOfflineMode(true)
-  setAuthUi(true)
-  applyPendingSharedPayloadToForm(parseSharedPayloadFromLocation(window.location, window.history), {
-    urlInput, titleInput, saveMessage, openComposer: () => openModal('link')
-  })
-  renderLinks()
-  saveMessage.textContent = 'Running in local-only vault mode.'
+  openOfflineNameSheet()
 })
 
 // Login / Register tab switching
@@ -521,7 +727,14 @@ const setActiveTab = (tabName: string) => {
 
 for (const tab of bottomNav?.querySelectorAll<HTMLButtonElement>('.bottom-nav-tab') ?? []) {
   tab.addEventListener('click', () => {
-    setActiveTab(tab.dataset.tab ?? 'home')
+    const tabName = tab.dataset.tab ?? 'home'
+    // When navigating to collections tab, clear filters to show all links
+    if (tabName === 'collections') {
+      groupFilter.value = ''
+      tagFilter.value = ''
+      renderLinks()
+    }
+    setActiveTab(tabName)
     vibrateShort()
   })
 }
@@ -554,15 +767,41 @@ const closeModal = () => {
   document.body.style.overflow = ''
 }
 
+const isStandaloneShell = () =>
+  window.matchMedia('(display-mode: standalone)').matches ||
+  ('standalone' in navigator && (navigator as Navigator & { standalone?: boolean }).standalone === true)
+
+const openExternalUrl = (url: string) => {
+  const popup = window.open(url, '_blank', 'noopener,noreferrer')
+  if (!popup) window.location.href = url
+}
+
 for (const card of appPanel.querySelectorAll<HTMLElement>('[data-opens-panel]')) {
   card.addEventListener('click', () => { openModal(card.dataset.opensPanel ?? '') })
 }
 
 appPanel.addEventListener('click', (event) => {
+  const externalLink = (event.target as HTMLElement).closest<HTMLAnchorElement>('[data-external-link]')
+  if (externalLink) {
+    const linkId = externalLink.dataset.linkId ?? ''
+    if (linkId) {
+      const visitScope = session?.username ?? getStoredOfflineDisplayName() ?? 'offline'
+      trackRecentVisit(visitScope, linkId)
+      if (homeRecentVisitedPreview && homePreview && !homePreview.hidden) renderLinks()
+    }
+    if (!isStandaloneShell()) return
+    event.preventDefault()
+    openExternalUrl(externalLink.href)
+    return
+  }
+
   const openCollectionsBtn = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-home-open-collections]')
   if (openCollectionsBtn) {
     event.preventDefault()
+    groupFilter.value = ''  // Clear group filter to show all links
+    tagFilter.value = ''    // Clear tag filter as well
     setActiveTab('collections')
+    renderLinks()
     return
   }
 
@@ -597,7 +836,74 @@ appPanel.addEventListener('click', (event) => {
 
 modalCloseBtn.addEventListener('click', closeModal)
 actionModal.addEventListener('click', (e) => { if (e.target === actionModal) closeModal() })
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !actionModal.hidden) closeModal() })
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  if (!actionModal.hidden) closeModal()
+  if (!offlineNameOverlay.hidden) closeOfflineNameSheet()
+})
+
+moveGroupCloseBtn.addEventListener('click', () => closeMoveGroupSheet(null))
+moveGroupCancelBtn.addEventListener('click', () => closeMoveGroupSheet(null))
+moveGroupOverlay.addEventListener('click', (event) => {
+  if (event.target === moveGroupOverlay) closeMoveGroupSheet(null)
+})
+
+moveGroupOptions.addEventListener('click', (event) => {
+  const option = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-move-group-id]')
+  if (!option) return
+  const picked = option.dataset.moveGroupId
+  if (!picked) return
+  closeMoveGroupSheet(picked === MOVE_GROUP_NONE_VALUE ? '' : picked)
+})
+
+const closeOfflineNameSheet = () => {
+  offlineNameOverlay.hidden = true
+  offlineNameError.hidden = true
+  offlineNameError.textContent = ''
+  document.body.style.overflow = ''
+}
+
+const openOfflineNameSheet = () => {
+  const currentName = getStoredOfflineDisplayName() ?? ''
+  offlineNameInput.value = currentName
+  offlineNameError.hidden = true
+  offlineNameError.textContent = ''
+  offlineNameOverlay.hidden = false
+  document.body.style.overflow = 'hidden'
+  setTimeout(() => offlineNameInput.focus(), 80)
+}
+
+const continueOfflineWithName = () => {
+  const displayName = offlineNameInput.value.trim()
+  if (!displayName) {
+    offlineNameError.textContent = 'Please choose a name to continue offline.'
+    offlineNameError.hidden = false
+    return
+  }
+
+  setStoredOfflineDisplayName(displayName)
+  setStoredOfflineMode(true)
+  updateGreeting(displayName)
+  setAuthUi(true)
+  closeOfflineNameSheet()
+  applyPendingSharedPayloadToForm(parseSharedPayloadFromLocation(window.location, window.history), {
+    urlInput, titleInput, saveMessage, openComposer: () => openModal('link')
+  })
+  renderLinks()
+  saveMessage.textContent = 'Running in local-only vault mode.'
+}
+
+offlineNameCancelBtn.addEventListener('click', closeOfflineNameSheet)
+offlineNameContinueBtn.addEventListener('click', continueOfflineWithName)
+offlineNameOverlay.addEventListener('click', (event) => {
+  if (event.target === offlineNameOverlay) closeOfflineNameSheet()
+})
+offlineNameInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    continueOfflineWithName()
+  }
+})
 
 // Collections view tabs
 const viewGroupBtn = document.querySelector<HTMLButtonElement>('#view-group-btn')
@@ -725,7 +1031,7 @@ linkForm.addEventListener('submit', async (event) => {
 
   const url       = toValidUrl(urlInput.value.trim())
   const title     = titleInput.value.trim()
-  const groupName = groupInput.value.trim()
+  const groupId   = groupInput.value
   const tags      = parseTags(tagsInput.value)
 
   if (!url) {
@@ -733,13 +1039,12 @@ linkForm.addEventListener('submit', async (event) => {
     return
   }
 
-  const group = groupName ? await findOrCreateGroup(doc, groupName) : null
   const meta  = latestMetadata?.url === url ? latestMetadata : null
 
   const saved = await addLink(doc, {
     url,
     title: title || deriveFallbackTitle(url),
-    groupId:     group?.id ?? '',
+    groupId:     groupId || '',
     tags,
     description: meta?.description,
     image:       meta?.image,
@@ -777,15 +1082,24 @@ groupForm.addEventListener('submit', async (event) => {
   const name = groupNameInput.value.trim()
   if (!name) return
 
-  await createGroup(doc, name)
+  const created = await createGroup(doc, name)
 
   // Pre-fill group in link modal and switch to it
-  groupInput.value = name
+  await applyLinkGroupOptions()
+  groupInput.value = created.id
   groupForm.reset()
   vibrateShort()
   closeModal()
   openModal('link')
   setTimeout(() => urlInput.focus(), 150)
+})
+
+groupInput.addEventListener('change', () => {
+  if (groupInput.value !== CREATE_GROUP_OPTION_VALUE) return
+  groupInput.value = ''
+  closeModal()
+  openModal('group')
+  setTimeout(() => groupNameInput.focus(), 120)
 })
 
 // PWA install
@@ -850,6 +1164,25 @@ window.addEventListener('online', () => {
 // ── Row actions (event delegation on the board) ───────────────────
 
 linkBoard.addEventListener('click', (e) => {
+  const moveBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-move-id]')
+  if (moveBtn) {
+    e.preventDefault()
+    e.stopPropagation()
+
+    const linkId = moveBtn.dataset.moveId
+    if (!linkId) return
+    const currentGroupId = moveBtn.dataset.currentGroupId ?? ''
+
+    void (async () => {
+      const nextGroupId = await openMoveGroupSheet(currentGroupId)
+      if (nextGroupId === null || nextGroupId === currentGroupId) return
+      await updateLink(doc, linkId, { groupId: nextGroupId })
+      vibrateShort()
+      closeAllRows()
+    })()
+    return
+  }
+
   const copyBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copy-id]')
   if (copyBtn) {
     e.preventDefault()
@@ -992,6 +1325,7 @@ const boot = async () => {
 
   const pendingPayload = parseSharedPayloadFromLocation(window.location, window.history)
   const isOfflineMode = getStoredOfflineMode()
+  const offlineDisplayName = getStoredOfflineDisplayName()
 
   if (session || isOfflineMode) {
     // Switch to user-specific vault so this account is fully isolated from others on this device
@@ -1030,7 +1364,7 @@ const boot = async () => {
     if (session) {
       updateGreeting(session.username)
     } else if (isOfflineMode) {
-      updateGreeting(null) // Show generic greeting in offline mode
+      updateGreeting(offlineDisplayName)
     }
     setAuthUi(true)
     applyPendingSharedPayloadToForm(pendingPayload, {

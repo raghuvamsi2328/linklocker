@@ -60,6 +60,13 @@ export function renderAppPageHtml(): string {
         <section class="home-preview" id="home-preview" hidden>
           <article class="home-preview-card">
             <div class="home-preview-head">
+              <h3 class="home-preview-title">Continue Reading</h3>
+            </div>
+            <div id="home-recent-visited-preview"></div>
+          </article>
+
+          <article class="home-preview-card">
+            <div class="home-preview-head">
               <h3 class="home-preview-title">Groups</h3>
               <button type="button" class="home-preview-link" data-home-open-collections>Open all</button>
             </div>
@@ -195,7 +202,9 @@ export function renderAppPageHtml(): string {
                     <label class="action-label" for="link-group">
                       <span class="material-symbols-rounded" aria-hidden="true">folder</span>Group
                     </label>
-                    <input id="link-group" type="text" class="action-input" placeholder="e.g. Work" />
+                    <select id="link-group" class="action-input" aria-label="Group">
+                      <option value="">No Group</option>
+                    </select>
                   </div>
                   <div class="action-field">
                     <label class="action-label" for="link-tags">

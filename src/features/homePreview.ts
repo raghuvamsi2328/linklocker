@@ -16,6 +16,27 @@ const getDomain = (url: string): string => {
   }
 }
 
+const renderRecentRow = (link: LinkData): string => {
+  const label = escapeHtml(link.title || getDomain(link.url))
+  const domainRaw = link.siteName || getDomain(link.url)
+  const domain = escapeHtml(domainRaw)
+  const url = escapeHtml(link.url)
+  const favicon = link.favicon
+    ? escapeHtml(link.favicon)
+    : `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domainRaw)}&sz=32`
+
+  return `
+    <a class="home-recent-item" href="${url}" target="_blank" rel="noopener noreferrer external" data-external-link data-link-id="${escapeHtml(link.id)}">
+      <span class="home-recent-media">
+        <img class="home-recent-favicon" src="${favicon}" width="18" height="18" loading="lazy" alt="" onerror="this.style.display='none'">
+      </span>
+      <span class="home-recent-content">
+        <span class="home-recent-title">${label}</span>
+        <span class="home-recent-domain">${domain}</span>
+      </span>
+    </a>`
+}
+
 export function renderHomeRecentLinks(links: LinkData[]): string {
   const recent = links.slice(0, 4)
 
@@ -25,16 +46,18 @@ export function renderHomeRecentLinks(links: LinkData[]): string {
 
   return `
     <div class="home-recent-list">
-      ${recent.map((link) => {
-        const label = escapeHtml(link.title || getDomain(link.url))
-        const domain = escapeHtml(link.siteName || getDomain(link.url))
-        const url = escapeHtml(link.url)
-        return `
-          <a class="home-recent-item" href="${url}" target="_blank" rel="noreferrer">
-            <span class="home-recent-title">${label}</span>
-            <span class="home-recent-domain">${domain}</span>
-          </a>`
-      }).join('')}
+      ${recent.map(renderRecentRow).join('')}
+    </div>`
+}
+
+export function renderHomeRecentVisitedLinks(links: LinkData[]): string {
+  if (links.length === 0) {
+    return '<p class="home-preview-empty">Links you open will appear here for quick return.</p>'
+  }
+
+  return `
+    <div class="home-recent-list">
+      ${links.map(renderRecentRow).join('')}
     </div>`
 }
 

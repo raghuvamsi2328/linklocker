@@ -8,6 +8,7 @@ export type LinkRow = {
   url: string
   pending: boolean
   createdAt: string
+  groupId: string
   group: string
   tags: string[]
   // Phase 5: rich metadata
@@ -63,6 +64,7 @@ export const buildLinkRows = (links: LinkData[], groups: GroupData[]): LinkRow[]
     url:         link.url,
     pending:     false,
     createdAt:   link.createdAt,
+    groupId:     link.groupId,
     group:       link.groupId ? (groupName.get(link.groupId) ?? '') : '',
     tags:        link.tags,
     image:       link.image,
@@ -127,7 +129,7 @@ const renderLinkRowHtml = (row: LinkRow): string => {
   return `
   <article class="link-row${row.pending ? ' pending' : ''}" data-link-id="${escapeHtml(row.id)}" data-swipe-root>
     <div class="link-row-surface" data-swipe-surface>
-      <a class="link-row-main" href="${escapedUrl}" target="_blank" rel="noreferrer">
+      <a class="link-row-main" href="${escapedUrl}" target="_blank" rel="noopener noreferrer external" data-external-link data-link-id="${escapeHtml(row.id)}">
         <span class="link-row-media">${thumbHtml}</span>
         <span class="link-row-content">
           <span class="link-row-title">${escapeHtml(row.label)}</span>
@@ -136,6 +138,9 @@ const renderLinkRowHtml = (row: LinkRow): string => {
         </span>
       </a>
       <div class="link-row-actions" aria-label="Link actions">
+        <button class="link-row-action link-row-action--move" data-move-id="${escapeHtml(row.id)}" data-current-group-id="${escapeHtml(row.groupId)}" type="button" aria-label="Move link">
+          <span class="material-symbols-rounded" aria-hidden="true">drive_file_move</span>
+        </button>
         <button class="link-row-action link-row-action--copy" data-copy-id="${escapeHtml(row.id)}" type="button" aria-label="Copy link">
           <span class="material-symbols-rounded" aria-hidden="true">content_copy</span>
         </button>
