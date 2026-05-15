@@ -65,9 +65,15 @@ export function renderLoginPageHtml(): string {
       </div>
 
       <div class="login-card">
+        <div class="login-mode-copy">
+          <p class="login-mode-kicker" id="auth-mode-kicker">Welcome back</p>
+          <h2 class="login-mode-title" id="auth-mode-title">Sign in to your vault</h2>
+          <p class="login-mode-subtitle" id="auth-mode-subtitle">Use your username and password to decrypt and sync your links.</p>
+        </div>
+
         <div class="login-tabs" role="tablist" aria-label="Authentication mode">
           <button type="button" class="login-tab login-tab--active" id="tab-login" role="tab" aria-selected="true">Sign In</button>
-          <button type="button" class="login-tab" id="tab-register" role="tab" aria-selected="false">Register</button>
+          <button type="button" class="login-tab" id="tab-register" role="tab" aria-selected="false">Sign Up</button>
         </div>
 
         <form id="auth-form" class="login-form">
@@ -110,6 +116,7 @@ export function renderLoginPageHtml(): string {
                 <span class="material-symbols-rounded" id="eye-icon" aria-hidden="true">visibility</span>
               </button>
             </div>
+            <p class="login-field-hint" id="password-hint">Minimum 6 characters.</p>
           </div>
 
           <p id="auth-message" class="login-message" aria-live="polite"></p>

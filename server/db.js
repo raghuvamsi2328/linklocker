@@ -169,3 +169,79 @@ export function getLinksForUser(userId, filters = {}) {
     tags: JSON.parse(row.tags ?? '[]')
   }));
 }
+
+// ── Device trust (pairing) ────────────────────────────────────────
+
+/**
+ * Register a device for a user. If it is the first device for this account it
+ * is automatically trusted. Returns { isFirstDevice, isTrusted }.
+ * Calling this again for an already-registered device is a no-op.
+ */
+export function registerDevice(userId, deviceId, pairingCode) {
+  const countRow = singleRow(
+    'SELECT COUNT(*) as cnt FROM user_devices WHERE user_id = ? AND is_trusted = 1',
+    [userId]
+  );
+  const trustedCount = countRow ? Number(countRow.cnt) : 0;
+  const isFirstDevice = trustedCount === 0;
+
+  const existing = singleRow(
+    'SELECT is_trusted FROM user_devices WHERE user_id = ? AND device_id = ?',
+    [userId, deviceId]
+  );
+
+  if (existing) {
+    // Recovery path: if this account currently has no trusted device at all,
+    // promote the current device so the pairing flow can bootstrap.
+    if (trustedCount === 0 && !Boolean(existing.is_trusted)) {
+      const promote = db.prepare(
+        'UPDATE user_devices SET is_trusted = 1, pairing_code = ? WHERE user_id = ? AND device_id = ?'
+      );
+      promote.run([pairingCode.toUpperCase(), userId, deviceId]);
+      promote.free();
+      saveDatabase();
+      return { isFirstDevice: true, isTrusted: true };
+    }
+
+    return { isFirstDevice: false, isTrusted: Boolean(existing.is_trusted) };
+  }
+
+  const isTrusted = isFirstDevice ? 1 : 0;
+  const stmt = db.prepare(
+    'INSERT INTO user_devices (user_id, device_id, pairing_code, is_trusted) VALUES (?, ?, ?, ?)'
+  );
+  stmt.run([userId, deviceId, pairingCode.toUpperCase(), isTrusted]);
+  stmt.free();
+  saveDatabase();
+
+  return { isFirstDevice, isTrusted: Boolean(isTrusted) };
+}
+
+/**
+ * Verify that `inputPairingCode` matches the pairing code of any trusted device
+ * owned by the user. If valid, marks `deviceId` as trusted and returns true.
+ */
+export function verifyAndTrustDevice(userId, deviceId, inputPairingCode) {
+  const trusted = singleRow(
+    'SELECT id FROM user_devices WHERE user_id = ? AND is_trusted = 1 AND UPPER(pairing_code) = UPPER(?)',
+    [userId, inputPairingCode]
+  );
+  if (!trusted) return false;
+
+  const stmt = db.prepare(
+    'UPDATE user_devices SET is_trusted = 1 WHERE user_id = ? AND device_id = ?'
+  );
+  stmt.run([userId, deviceId]);
+  stmt.free();
+  saveDatabase();
+  return true;
+}
+
+/** Returns true if the device is registered and trusted for the user. */
+export function isDeviceTrusted(userId, deviceId) {
+  const row = singleRow(
+    'SELECT is_trusted FROM user_devices WHERE user_id = ? AND device_id = ?',
+    [userId, deviceId]
+  );
+  return row ? Boolean(row.is_trusted) : false;
+}

@@ -2,16 +2,12 @@ export function renderAppPageHtml(): string {
   return `
     <section id="app-panel" hidden>
 
-      <!-- ── Header ── -->
+      <!-- Compact Header -->
       <header class="app-header">
         <div class="app-header-top">
           <div class="app-brand-row">
-            <button class="bookmark-btn" id="bookmark-anim" aria-label="BNKR home" type="button">
-              <span class="material-symbols-rounded bookmark-icon" aria-hidden="true">security</span>
-              <span class="bookmark-ring" aria-hidden="true"></span>
-            </button>
             <div class="app-greeting-wrap">
-              <p class="app-greeting" id="app-greeting">Hello!</p>
+              <p class="app-greeting" id="app-greeting">Good morning</p>
               <p class="app-subgreeting">Secure. Local. Yours.</p>
             </div>
           </div>
@@ -19,57 +15,153 @@ export function renderAppPageHtml(): string {
             <span class="material-symbols-rounded" aria-hidden="true">logout</span>
           </button>
         </div>
-
-        <div class="app-header-pills">
-          <div id="sync-status" class="status-pill" data-status="synced">Local vault</div>
-          <button id="device-id-btn" type="button" class="status-pill device-id-pill" aria-label="Device pairing code" title="Your device pairing code">
-            <span class="material-symbols-rounded" aria-hidden="true" style="font-size:14px;vertical-align:middle">devices</span>
-            <span id="device-pairing-code">····</span>
-          </button>
-          <button id="install-btn" type="button" class="app-icon-btn" hidden aria-label="Install app">
-            <span class="material-symbols-rounded" aria-hidden="true">download</span>
-          </button>
-        </div>
-
-        <div class="app-stats" id="app-stats">
-          <div class="app-stat">
-            <span class="material-symbols-rounded" aria-hidden="true">link</span>
-            <span><strong id="stat-links">0</strong> links</span>
-          </div>
-          <div class="app-stat">
-            <span class="material-symbols-rounded" aria-hidden="true">folder_open</span>
-            <span><strong id="stat-groups">0</strong> groups</span>
-          </div>
-          <div class="app-stat">
-            <span class="material-symbols-rounded" aria-hidden="true">sell</span>
-            <span><strong id="stat-tags">0</strong> tags</span>
-          </div>
-        </div>
       </header>
 
-      <!-- ── Quick Actions — 3 compact trigger buttons ── -->
-      <div class="quick-actions">
-        <button type="button" class="action-card" id="composer-card" data-opens-panel="link">
-          <span class="action-toggle-icon">
-            <span class="material-symbols-rounded" aria-hidden="true">add_link</span>
-          </span>
-          <span class="action-toggle-label">Add Link</span>
-        </button>
+      <section class="tab-panel is-active" data-tab-panel="home">
+        <section id="home-empty-state" class="home-empty" hidden>
+          <span class="material-symbols-rounded home-empty-icon" aria-hidden="true">travel_explore</span>
+          <h3 class="home-empty-title">Start your vault</h3>
+          <p class="home-empty-copy">Save your first link, create a group, and keep everything in one place.</p>
+          <div class="home-empty-actions">
+            <button type="button" class="home-empty-btn home-empty-btn--primary" data-home-add>
+              <span class="material-symbols-rounded" aria-hidden="true">add_link</span>
+              Add first link
+            </button>
+            <button type="button" class="home-empty-btn" data-home-group>
+              <span class="material-symbols-rounded" aria-hidden="true">create_new_folder</span>
+              Create group
+            </button>
+          </div>
+        </section>
 
-        <button type="button" class="action-card" id="backup-card" data-opens-panel="backup">
-          <span class="action-toggle-icon action-toggle-icon--sky">
-            <span class="material-symbols-rounded" aria-hidden="true">cloud_download</span>
-          </span>
-          <span class="action-toggle-label">Backup</span>
-        </button>
+        <div class="quick-actions quick-actions--dense" id="home-quick-actions">
+          <button type="button" class="action-card" id="composer-card" data-opens-panel="link">
+            <span class="action-toggle-icon">
+              <span class="material-symbols-rounded" aria-hidden="true">add_link</span>
+            </span>
+            <span class="action-toggle-label">Add Link</span>
+          </button>
 
-        <button type="button" class="action-card" id="group-card" data-opens-panel="group">
-          <span class="action-toggle-icon action-toggle-icon--purple">
-            <span class="material-symbols-rounded" aria-hidden="true">create_new_folder</span>
-          </span>
-          <span class="action-toggle-label">New Group</span>
-        </button>
-      </div>
+          <button type="button" class="action-card" id="backup-card" data-opens-panel="backup">
+            <span class="action-toggle-icon action-toggle-icon--sky">
+              <span class="material-symbols-rounded" aria-hidden="true">cloud_download</span>
+            </span>
+            <span class="action-toggle-label">Backup</span>
+          </button>
+
+          <button type="button" class="action-card" id="group-card" data-opens-panel="group">
+            <span class="action-toggle-icon action-toggle-icon--purple">
+              <span class="material-symbols-rounded" aria-hidden="true">create_new_folder</span>
+            </span>
+            <span class="action-toggle-label">New Group</span>
+          </button>
+        </div>
+
+        <section class="home-preview" id="home-preview" hidden>
+          <article class="home-preview-card">
+            <div class="home-preview-head">
+              <h3 class="home-preview-title">Groups</h3>
+              <button type="button" class="home-preview-link" data-home-open-collections>Open all</button>
+            </div>
+            <div id="home-groups-preview"></div>
+          </article>
+
+          <article class="home-preview-card">
+            <div class="home-preview-head">
+              <h3 class="home-preview-title">Recent Links</h3>
+            </div>
+            <div id="home-recent-preview"></div>
+          </article>
+        </section>
+
+        <footer class="quotes-band" id="home-quote" aria-label="Quote of the moment">
+          <span class="material-symbols-rounded quotes-icon" aria-hidden="true">format_quote</span>
+          <p class="rotating-quote" id="rotating-quote">Stop digging — you have hit bottom.</p>
+        </footer>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="search">
+        <section class="collections-section">
+          <div class="collections-hd">
+            <div class="collections-title-row">
+              <h2 class="collections-title">
+                <span class="material-symbols-rounded" aria-hidden="true">search</span>
+                Search
+              </h2>
+            </div>
+            <div class="collections-filters">
+              <div class="coll-search-wrap">
+                <span class="material-symbols-rounded" aria-hidden="true">search</span>
+                <input id="filter-tag" type="search" class="coll-search" placeholder="Search links…" />
+              </div>
+              <select id="filter-group" class="coll-group-select">
+                <option value="">All groups</option>
+              </select>
+              <button id="clear-filters" type="button" class="coll-clear-btn" aria-label="Clear filters">
+                <span class="material-symbols-rounded" aria-hidden="true">filter_alt_off</span>
+              </button>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="add">
+        <div class="quick-actions quick-actions--stacked">
+          <button type="button" class="action-card action-card--wide" data-opens-panel="link">
+            <span class="action-toggle-icon"><span class="material-symbols-rounded" aria-hidden="true">add_link</span></span>
+            <span class="action-toggle-label">Add Link</span>
+          </button>
+          <button type="button" class="action-card action-card--wide" data-opens-panel="group">
+            <span class="action-toggle-icon action-toggle-icon--purple"><span class="material-symbols-rounded" aria-hidden="true">create_new_folder</span></span>
+            <span class="action-toggle-label">Create Group</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="collections">
+        <section class="collections-section">
+          <div class="collections-hd">
+            <div class="collections-title-row">
+              <h2 class="collections-title">
+                <span class="material-symbols-rounded" aria-hidden="true">collections_bookmark</span>
+                My Collections
+              </h2>
+              <div class="coll-view-tabs" role="group" aria-label="View by">
+                <button type="button" class="coll-view-tab coll-view-tab--active" id="view-group-btn">
+                  <span class="material-symbols-rounded" aria-hidden="true">folder_open</span>
+                  Groups
+                </button>
+                <button type="button" class="coll-view-tab" id="view-tag-btn">
+                  <span class="material-symbols-rounded" aria-hidden="true">tag</span>
+                  Tags
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <select id="view-mode" aria-hidden="true" style="display:none">
+            <option value="group">View: Groups</option>
+            <option value="tag">View: Tags</option>
+          </select>
+
+          <div id="link-board" class="board"></div>
+        </section>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="settings">
+        <div class="settings-card">
+          <h3 class="settings-title">Install & Device</h3>
+          <p class="settings-copy">Use the install button for Android Chrome. On iOS, use Share -> Add to Home Screen.</p>
+          <button id="device-id-btn" type="button" class="action-btn action-btn--ghost action-btn--full device-id-btn" aria-label="Device pairing code" title="Your device pairing code">
+            <span class="material-symbols-rounded" aria-hidden="true">devices</span>
+            Pairing Code: <span id="device-pairing-code">····</span>
+          </button>
+          <button id="settings-install-btn" type="button" class="action-btn action-btn--ghost action-btn--full" hidden>
+            <span class="material-symbols-rounded" aria-hidden="true">download</span>
+            Install App
+          </button>
+        </div>
+      </section>
 
       <!-- ── Action Modal ── -->
       <div class="action-modal-overlay" id="action-modal" hidden>
@@ -165,53 +257,28 @@ export function renderAppPageHtml(): string {
         </div>
       </div>
 
-      <!-- ── My Collections ── -->
-      <section class="collections-section">
-        <div class="collections-hd">
-          <div class="collections-title-row">
-            <h2 class="collections-title">
-              <span class="material-symbols-rounded" aria-hidden="true">collections_bookmark</span>
-              My Collections
-            </h2>
-            <div class="coll-view-tabs" role="group" aria-label="View by">
-              <button type="button" class="coll-view-tab coll-view-tab--active" id="view-group-btn">
-                <span class="material-symbols-rounded" aria-hidden="true">folder_open</span>
-                Groups
-              </button>
-              <button type="button" class="coll-view-tab" id="view-tag-btn">
-                <span class="material-symbols-rounded" aria-hidden="true">tag</span>
-                Tags
-              </button>
-            </div>
-          </div>
-
-          <div class="collections-filters">
-            <div class="coll-search-wrap">
-              <span class="material-symbols-rounded" aria-hidden="true">search</span>
-              <input id="filter-tag" type="search" class="coll-search" placeholder="Search links…" />
-            </div>
-            <select id="filter-group" class="coll-group-select">
-              <option value="">All groups</option>
-            </select>
-            <button id="clear-filters" type="button" class="coll-clear-btn" aria-label="Clear filters">
-              <span class="material-symbols-rounded" aria-hidden="true">filter_alt_off</span>
-            </button>
-          </div>
-        </div>
-
-        <select id="view-mode" aria-hidden="true" style="display:none">
-          <option value="group">View: Groups</option>
-          <option value="tag">View: Tags</option>
-        </select>
-
-        <div id="link-board" class="board"></div>
-      </section>
-
-      <!-- ── Quotes ── -->
-      <footer class="quotes-band" aria-label="Quote of the moment">
-        <span class="material-symbols-rounded quotes-icon" aria-hidden="true">format_quote</span>
-        <p class="rotating-quote" id="rotating-quote">Stop digging — you have hit bottom.</p>
-      </footer>
+      <nav class="bottom-nav" id="bottom-nav" aria-label="Primary">
+        <button class="bottom-nav-tab is-active" data-tab="home" type="button" aria-label="Home">
+          <span class="material-symbols-rounded" aria-hidden="true">home</span>
+          <span>Home</span>
+        </button>
+        <button class="bottom-nav-tab" data-tab="search" type="button" aria-label="Search">
+          <span class="material-symbols-rounded" aria-hidden="true">search</span>
+          <span>Search</span>
+        </button>
+        <button class="bottom-nav-tab" data-tab="add" type="button" aria-label="Add">
+          <span class="material-symbols-rounded" aria-hidden="true">add_circle</span>
+          <span>Add</span>
+        </button>
+        <button class="bottom-nav-tab" data-tab="collections" type="button" aria-label="Collections">
+          <span class="material-symbols-rounded" aria-hidden="true">collections_bookmark</span>
+          <span>Collections</span>
+        </button>
+        <button class="bottom-nav-tab" data-tab="settings" type="button" aria-label="Settings">
+          <span class="material-symbols-rounded" aria-hidden="true">settings</span>
+          <span>Settings</span>
+        </button>
+      </nav>
 
     </section>
   `

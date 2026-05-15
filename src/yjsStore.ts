@@ -102,18 +102,23 @@ export function getVault(): Y.Doc {
  * Connects the vault to the sync server via y-websocket.
  * `room`      — shared room name (e.g. "bnkr-vault-alice")
  * `serverUrl` — WebSocket URL of the sync server (e.g. "ws://localhost:3000/sync")
+ * `auth`      — JWT token + deviceId required by the server trust gate
  *
  * The server acts as a relay; it only sees encrypted binary Yjs updates.
  * Vault data is encrypted by Phase 3 before entering Yjs, so the server
  * cannot read any link or group content.
  */
-export function connectSync(room: string, serverUrl: string): WebsocketProvider {
+export function connectSync(
+  room: string,
+  serverUrl: string,
+  auth?: { token: string; deviceId: string }
+): WebsocketProvider {
   if (_wsProvider) return _wsProvider
   if (!_doc) throw new Error('Vault not initialised')
 
   console.log('[sync] connectSync room=', room, 'server=', serverUrl)
 
-  _wsProvider = new WebsocketProvider(serverUrl, room, _doc)
+  _wsProvider = new WebsocketProvider(serverUrl, room, _doc, auth ? { params: auth } : undefined)
 
   _wsProvider.on('status', (event: { status: string }) => {
     console.log('[sync] status —', event.status)

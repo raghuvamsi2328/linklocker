@@ -8,7 +8,10 @@ import jwt from 'jsonwebtoken';
 import {
   createUser,
   getUserByUsername,
-  initializeDatabase
+  initializeDatabase,
+  registerDevice,
+  verifyAndTrustDevice,
+  isDeviceTrusted
 } from './db.js';
 
 const app = express();
@@ -274,6 +277,60 @@ app.post('/api/auth/login', async (req, res) => {
   });
 });
 
+// ── Device pairing ────────────────────────────────────────────────
+
+/**
+ * POST /api/devices/register
+ * Registers the calling device for the authenticated user. If this is the
+ * first device for the account it is automatically trusted (no code needed).
+ * Returns { isFirstDevice: boolean, isTrusted: boolean }.
+ */
+app.post('/api/devices/register', authRequired, (req, res) => {
+  const { deviceId, pairingCode } = req.body ?? {};
+
+  if (typeof deviceId !== 'string' || !deviceId.trim()) {
+    res.status(400).json({ error: 'deviceId is required' });
+    return;
+  }
+
+  if (typeof pairingCode !== 'string' || !pairingCode.trim()) {
+    res.status(400).json({ error: 'pairingCode is required' });
+    return;
+  }
+
+  const result = registerDevice(req.user.id, deviceId.trim(), pairingCode.trim());
+  res.json(result);
+});
+
+/**
+ * POST /api/devices/pair
+ * Verifies a pairing code entered on a new device. The code must match the
+ * pairingCode of any existing trusted device for this user. On success the
+ * calling device is marked as trusted.
+ */
+app.post('/api/devices/pair', authRequired, (req, res) => {
+  const { deviceId, pairingCode } = req.body ?? {};
+
+  if (typeof deviceId !== 'string' || !deviceId.trim()) {
+    res.status(400).json({ error: 'deviceId is required' });
+    return;
+  }
+
+  if (typeof pairingCode !== 'string' || !pairingCode.trim()) {
+    res.status(400).json({ error: 'pairingCode is required' });
+    return;
+  }
+
+  const success = verifyAndTrustDevice(req.user.id, deviceId.trim(), pairingCode.trim());
+
+  if (!success) {
+    res.status(401).json({ error: 'Invalid pairing code. Check the code shown in Settings on your trusted device.' });
+    return;
+  }
+
+  res.json({ ok: true });
+});
+
 // ── Phase 4: WebSocket servers ────────────────────────────────────
 //
 // /signal  — y-webrtc signalling (kept for reference, unused by client now)
@@ -290,6 +347,33 @@ httpServer.on('upgrade', (req, socket, head) => {
   if (pathname === '/signal') {
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
   } else if (pathname.startsWith('/sync')) {
+    // Require a valid JWT + trusted deviceId before allowing sync
+    const urlParams = new URLSearchParams((req.url ?? '').split('?')[1] ?? '');
+    const token    = urlParams.get('token');
+    const deviceId = urlParams.get('deviceId');
+
+    if (!token || !deviceId) {
+      console.warn('[sync] upgrade rejected — missing token or deviceId');
+      socket.destroy();
+      return;
+    }
+
+    let userId;
+    try {
+      const payload = jwt.verify(token, jwtSecret);
+      userId = Number(payload.sub);
+    } catch {
+      console.warn('[sync] upgrade rejected — invalid JWT');
+      socket.destroy();
+      return;
+    }
+
+    if (!isDeviceTrusted(userId, deviceId)) {
+      console.warn(`[sync] upgrade rejected — device ${deviceId} not trusted for user ${userId}`);
+      socket.destroy();
+      return;
+    }
+
     syncWss.handleUpgrade(req, socket, head, (ws) => syncWss.emit('connection', ws, req));
   } else {
     socket.destroy();
@@ -308,8 +392,9 @@ httpServer.on('upgrade', (req, socket, head) => {
 const syncRooms = new Map();
 
 syncWss.on('connection', (ws, req) => {
-  // Room name is the last path segment after /sync/
-  const room = (req.url ?? '/').replace(/^\/sync\/?/, '') || 'default';
+  // Room name is the path segment after /sync/, query params are stripped
+  const fullPath = (req.url ?? '/').replace(/^\/sync\/?/, '') || 'default';
+  const room = fullPath.split('?')[0] || 'default';
   console.log(`[sync] client joined room="${room}"  peers=${(syncRooms.get(room)?.size ?? 0) + 1}`);
 
   if (!syncRooms.has(room)) syncRooms.set(room, new Set());

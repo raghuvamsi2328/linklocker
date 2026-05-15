@@ -105,3 +105,55 @@ export async function authenticate(
     return { session, wasOffline: true }
   }
 }
+
+// ── Device pairing ─────────────────────────────────────────────────
+
+/**
+ * Registers this device with the server under the authenticated user's account.
+ * If it is the first device for the account it is auto-trusted (no pairing needed).
+ * Subsequent devices get `isTrusted: false` until the user enters the code from
+ * a trusted device.
+ */
+export async function registerDeviceWithServer(
+  token: string,
+  deviceId: string,
+  pairingCode: string
+): Promise<{ isFirstDevice: boolean; isTrusted: boolean }> {
+  const res = await fetch('/api/devices/register', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ deviceId, pairingCode })
+  })
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(data.error ?? 'Device registration failed')
+  }
+  return res.json() as Promise<{ isFirstDevice: boolean; isTrusted: boolean }>
+}
+
+/**
+ * Verifies a pairing code entered on a new device. The code must match the
+ * code shown in Settings on any existing trusted device for this account.
+ * Throws with a user-facing message on failure.
+ */
+export async function verifyPairingCode(
+  token: string,
+  deviceId: string,
+  pairingCode: string
+): Promise<void> {
+  const res = await fetch('/api/devices/pair', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify({ deviceId, pairingCode })
+  })
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(data.error ?? 'Invalid pairing code')
+  }
+}

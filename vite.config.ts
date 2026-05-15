@@ -15,9 +15,36 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['apple-touch-icon.png', 'favicon.svg', 'favicon.ico', 'favicon-96x96.png'],
       workbox: {
-        // Phase 2: Auth requests are handled in-app with offline fallback (offlineAuth.ts).
-        // Phase 4: WebRTC signalling will add runtimeCaching rules here.
-        runtimeCaching: []
+        cleanupOutdatedCaches: true,
+        navigateFallback: '/index.html',
+        runtimeCaching: [
+          {
+            urlPattern: ({ request }) => request.mode === 'navigate',
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'pages-cache',
+              networkTimeoutSeconds: 3
+            }
+          },
+          {
+            urlPattern: ({ request }) => request.destination === 'style' || request.destination === 'script' || request.destination === 'worker',
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'static-resources'
+            }
+          },
+          {
+            urlPattern: ({ request }) => request.destination === 'image',
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'image-cache',
+              expiration: {
+                maxEntries: 120,
+                maxAgeSeconds: 60 * 60 * 24 * 30
+              }
+            }
+          }
+        ]
       },
       manifest: {
         id: '/',
@@ -26,6 +53,7 @@ export default defineConfig({
         description: 'Save links across devices and offline sessions',
         background_color: '#F7F4EF',
         display: 'standalone',
+        orientation: 'portrait-primary',
         start_url: '/',
         scope: '/',
         theme_color: '#5A9B82',

@@ -17,11 +17,12 @@ import { initVault, switchVault, connectSync, disconnectSync, getSync } from './
 import { addLink, updateLink, getLinks, deleteLink } from './data/links'
 import { createGroup, getGroups, findOrCreateGroup } from './data/groups'
 import { attachSyncStatus } from './syncStatus'
-import { authenticate } from './features/authSync'
+import { authenticate, registerDeviceWithServer, verifyPairingCode } from './features/authSync'
 import { clearAuthCache, updateCachedToken } from './features/offlineAuth'
 import { initVaultCrypto, deriveKeyFromCredentials } from './features/vaultCrypto'
 import { getDeviceIdentity } from './features/deviceIdentity'
-import { applyGroupFilterOptions, buildLinkRows, renderBoardHtml, type LinkRow } from './features/board'
+import { applyGroupFilterOptions, buildLinkRows, renderBoardHtml } from './features/board'
+import { renderHomeGroups, renderHomeRecentLinks } from './features/homePreview'
 import {
   detectMetadata,
   deriveFallbackTitle,
@@ -66,11 +67,37 @@ app.innerHTML = `
     ${renderLoginPageHtml()}
     ${renderAppPageHtml()}
   </main>
+
+  <!-- Device pairing overlay — shown when a second device logs in -->
+  <div id="pairing-overlay" class="pairing-overlay" hidden aria-modal="true" role="dialog" aria-labelledby="pairing-title">
+    <div class="pairing-sheet">
+      <span class="material-symbols-rounded pairing-icon" aria-hidden="true">devices</span>
+      <h2 class="pairing-title" id="pairing-title">New device detected</h2>
+      <p class="pairing-desc">Enter the 4-character pairing code shown in <strong>Settings → Pairing Code</strong> on one of your trusted devices.</p>
+      <input
+        id="pairing-code-input"
+        class="pairing-input"
+        type="text"
+        maxlength="4"
+        autocomplete="off"
+        autocapitalize="characters"
+        spellcheck="false"
+        placeholder="A3F1"
+        aria-label="Pairing code"
+      />
+      <p id="pairing-error" class="pairing-error" hidden></p>
+      <button id="pairing-submit-btn" type="button" class="pairing-submit-btn">
+        <span class="material-symbols-rounded" aria-hidden="true">link</span>
+        Pair device
+      </button>
+      <button id="pairing-cancel-btn" type="button" class="pairing-cancel-btn">Cancel — sign out</button>
+    </div>
+  </div>
 `
 
 // ── Element queries ──────────────────────────────────────────────
 
-const syncStatusEl    = document.querySelector<HTMLElement>('#sync-status')!
+const syncStatusEl    = document.querySelector<HTMLElement>('#sync-status')
 const authPanel       = document.querySelector<HTMLElement>('#auth-panel')!
 const appPanel        = document.querySelector<HTMLElement>('#app-panel')!
 const authForm        = document.querySelector<HTMLFormElement>('#auth-form')!
@@ -78,8 +105,8 @@ const loginBtn        = document.querySelector<HTMLButtonElement>('#login-btn')!
 const registerBtn     = document.querySelector<HTMLButtonElement>('#register-btn')!
 const offlineModeBtn  = document.querySelector<HTMLButtonElement>('#offline-mode-btn')!
 const authMessage     = document.querySelector<HTMLElement>('#auth-message')!
-const installBtn      = document.querySelector<HTMLButtonElement>('#install-btn')!
 const landingInstallBtn = document.querySelector<HTMLButtonElement>('#landing-install-btn')!
+const settingsInstallBtn = document.querySelector<HTMLButtonElement>('#settings-install-btn')
 const logoutBtn       = document.querySelector<HTMLButtonElement>('#logout-btn')!
 const linkForm        = document.querySelector<HTMLFormElement>('#link-form')!
 const saveMessage     = document.querySelector<HTMLElement>('#save-message')!
@@ -102,6 +129,14 @@ const deviceIdBtn     = document.querySelector<HTMLButtonElement>('#device-id-bt
 const actionModal     = document.querySelector<HTMLElement>('#action-modal')!
 const modalCloseBtn   = document.querySelector<HTMLButtonElement>('#modal-close')!
 const modalTitle      = document.querySelector<HTMLElement>('#modal-title')!
+const bottomNav       = document.querySelector<HTMLElement>('#bottom-nav')
+const tabPanels       = [...document.querySelectorAll<HTMLElement>('[data-tab-panel]')]
+const homeEmptyState  = document.querySelector<HTMLElement>('#home-empty-state')
+const homeQuickActions = document.querySelector<HTMLElement>('#home-quick-actions')
+const homeQuote = document.querySelector<HTMLElement>('#home-quote')
+const homePreview = document.querySelector<HTMLElement>('#home-preview')
+const homeGroupsPreview = document.querySelector<HTMLElement>('#home-groups-preview')
+const homeRecentPreview = document.querySelector<HTMLElement>('#home-recent-preview')
 
 // ── Rotating quotes ───────────────────────────────────────────────
 
@@ -143,58 +178,58 @@ const bucketOpenState = new Map<string, boolean>()
 let deferredInstallPrompt: InstallPromptEvent | null = null
 let latestMetadata: { url: string; description: string; image: string; favicon: string; siteName: string } | null = null
 let syncStatus: { cleanup: () => void; update: () => void } | null = null
+let currentGreetingUser: string | null = null
+let greetingRefreshTimer: number | null = null
 
-// ── Greetings in multiple languages ──────────────────────────────
+const vibrateShort = () => {
+  if ('vibrate' in navigator) navigator.vibrate(10)
+}
 
-const GREETINGS = [
-  'Hello',           // English
-  'Hola',            // Spanish
-  'Bonjour',         // French
-  'Ciao',            // Italian
-  'Hallo',           // German
-  'Olá',             // Portuguese
-  'Привет',          // Russian
-  '你好',            // Mandarin Chinese
-  'こんにちは',      // Japanese
-  '안녕하세요',      // Korean
-  'สวัสดี',          // Thai
-  'مرحبا',           // Arabic
-  'שלום',            // Hebrew
-  'Γεια σας',        // Greek
-  'Namaste',         // Hindi
-  'Sawubona',        // Zulu
-  'Terve',           // Finnish
-  'Hej',             // Swedish
-  'Goedendag',       // Dutch
-  'Ahoj',            // Czech
-]
+// ── Time-based greeting ─────────────────────────────────────────
 
-const getRandomGreeting = (): string => {
-  return GREETINGS[Math.floor(Math.random() * GREETINGS.length)]
+const getTimeGreeting = (): string => {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 18) return 'Good afternoon'
+  return 'Good evening'
 }
 
 // ── Sync status ──────────────────────────────────────────────────
 
-syncStatus = attachSyncStatus(syncStatusEl, getSync)
+if (syncStatusEl) {
+  syncStatus = attachSyncStatus(syncStatusEl, getSync)
+}
 
 // ── Greeting & stats ─────────────────────────────────────────────
 
 const updateGreeting = (username: string | null) => {
+  currentGreetingUser = username
   const el = document.querySelector<HTMLElement>('#app-greeting')
   if (el) {
-    const greeting = getRandomGreeting()
-    el.textContent = username ? `${greeting}, ${username}!` : `${greeting}!`
+    const greeting = getTimeGreeting()
+    el.textContent = username ? `${greeting}, ${username}` : greeting
   }
 }
 
-const updateStats = (rows: LinkRow[]) => {
-  const statLinks  = document.querySelector<HTMLElement>('#stat-links')
-  const statGroups = document.querySelector<HTMLElement>('#stat-groups')
-  const statTags   = document.querySelector<HTMLElement>('#stat-tags')
-  if (statLinks)  statLinks.textContent  = String(rows.length)
-  if (statGroups) statGroups.textContent = String(new Set(rows.map((r) => r.group).filter(Boolean)).size)
-  if (statTags)   statTags.textContent   = String(new Set(rows.flatMap((r) => r.tags)).size)
+const scheduleGreetingRefresh = () => {
+  if (greetingRefreshTimer !== null) window.clearTimeout(greetingRefreshTimer)
+
+  const now = new Date()
+  const next = new Date(now)
+  const hour = now.getHours()
+
+  if (hour < 12) next.setHours(12, 0, 0, 0)
+  else if (hour < 18) next.setHours(18, 0, 0, 0)
+  else next.setDate(next.getDate() + 1), next.setHours(0, 0, 0, 0)
+
+  const delayMs = Math.max(1000, next.getTime() - now.getTime())
+  greetingRefreshTimer = window.setTimeout(() => {
+    updateGreeting(currentGreetingUser)
+    scheduleGreetingRefresh()
+  }, delayMs)
 }
+
+scheduleGreetingRefresh()
 
 // ── Auth UI ───────────────────────────────────────────────────────
 
@@ -221,9 +256,17 @@ const renderLinks = () => {
     const selectedGroup = groupFilter.value
     const tagNeedle     = tagFilter.value.trim().toLowerCase()
     const mode          = viewModeSelect.value === 'tag' ? 'tag' : 'group'
+    const isEmptyVault  = rows.length === 0
+
+    if (homeEmptyState) homeEmptyState.hidden = !isEmptyVault
+    if (homeQuickActions) homeQuickActions.hidden = isEmptyVault
+    if (homePreview) homePreview.hidden = isEmptyVault
+    if (homeQuote) homeQuote.hidden = isEmptyVault
+
+    if (homeGroupsPreview) homeGroupsPreview.innerHTML = renderHomeGroups(groups, links)
+    if (homeRecentPreview) homeRecentPreview.innerHTML = renderHomeRecentLinks(links)
 
     linkBoard.innerHTML = renderBoardHtml(rows, selectedGroup, tagNeedle, mode, bucketOpenState)
-    updateStats(rows)
   })()
 }
 
@@ -257,6 +300,82 @@ const setAuthPending = (pending: boolean) => {
   if (label) label.textContent = pending ? 'Signing in…' : 'Sign In'
 }
 
+// ── Device pairing overlay ────────────────────────────────────────
+
+/**
+ * Shows the pairing overlay and returns a Promise that resolves only after
+ * the user successfully enters the code from a trusted device.
+ * If the user cancels, the session is cleared and the login screen is shown.
+ */
+const showPairingOverlay = (token: string, deviceId: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    const overlay   = document.getElementById('pairing-overlay')!
+    const input     = document.getElementById('pairing-code-input') as HTMLInputElement
+    const errorEl   = document.getElementById('pairing-error')!
+    const submitBtn = document.getElementById('pairing-submit-btn') as HTMLButtonElement
+    const cancelBtn = document.getElementById('pairing-cancel-btn') as HTMLButtonElement
+
+    overlay.hidden = false
+    input.value = ''
+    errorEl.hidden = true
+    setTimeout(() => input.focus(), 80)
+
+    const cleanup = () => { overlay.hidden = true }
+
+    const onSubmit = async () => {
+      const code = input.value.trim().toUpperCase()
+      if (code.length !== 4) {
+        errorEl.textContent = 'Enter a 4-character code.'
+        errorEl.hidden = false
+        return
+      }
+      submitBtn.disabled = true
+      submitBtn.textContent = 'Verifying…'
+      errorEl.hidden = true
+      try {
+        await verifyPairingCode(token, deviceId, code)
+        cleanup()
+        resolve(true)
+      } catch (err) {
+        errorEl.textContent = err instanceof Error ? err.message : 'Invalid pairing code.'
+        errorEl.hidden = false
+        submitBtn.disabled = false
+        submitBtn.innerHTML = '<span class="material-symbols-rounded" aria-hidden="true">link</span> Pair device'
+      }
+    }
+
+    const onCancel = () => {
+      cleanup()
+      session = null
+      clearStoredSession()
+      setAuthUi(false)
+      // Cancel pairing and return to login.
+      resolve(false)
+    }
+
+    submitBtn.onclick = onSubmit
+    cancelBtn.onclick = onCancel
+    input.onkeydown = (e) => { if (e.key === 'Enter') void onSubmit() }
+    // Auto-uppercase as user types
+    input.oninput = () => { input.value = input.value.toUpperCase() }
+  })
+
+const ensureTrustedDeviceOrAbort = async (
+  token: string,
+  identity: { deviceId: string; pairingCode: string },
+  interactive: boolean
+): Promise<boolean> => {
+  try {
+    const status = await registerDeviceWithServer(token, identity.deviceId, identity.pairingCode)
+    if (status.isTrusted) return true
+    if (!interactive) return false
+    return showPairingOverlay(token, identity.deviceId)
+  } catch {
+    // If server is unreachable, allow local use and skip trust checks.
+    return true
+  }
+}
+
 const runAuth = async (mode: 'login' | 'register') => {
   setAuthPending(true)
   authMessage.textContent = ''
@@ -278,8 +397,21 @@ const runAuth = async (mode: 'login' | 'register') => {
     attachVaultObservers(doc)
     console.log('[boot] runAuth: vault switched, doc guid:', doc.guid)
 
-    // Phase 4: start WebSocket sync for this user's vault
-    const provider = connectSync(`bnkr-vault-${newSession.username}`, SYNC_URL)
+    // Phase 4: start WebSocket sync for this user's vault — auth params gate access
+    const identity = await getDeviceIdentity()
+
+    const trusted = await ensureTrustedDeviceOrAbort(newSession.token, identity, true)
+    if (!trusted) {
+      // User cancelled pairing. Stay signed out and do not connect sync.
+      setAuthPending(false)
+      return
+    }
+
+    const provider = connectSync(
+      `bnkr-vault-${newSession.username}`,
+      SYNC_URL,
+      { token: newSession.token, deviceId: identity.deviceId }
+    )
     provider.on('status', () => syncStatus?.update())
     provider.on('sync',   () => syncStatus?.update())
 
@@ -318,6 +450,10 @@ offlineModeBtn.addEventListener('click', () => {
 // Login / Register tab switching
 const tabLogin    = document.querySelector<HTMLButtonElement>('#tab-login')
 const tabRegister = document.querySelector<HTMLButtonElement>('#tab-register')
+const authModeKicker = document.querySelector<HTMLElement>('#auth-mode-kicker')
+const authModeTitle = document.querySelector<HTMLElement>('#auth-mode-title')
+const authModeSubtitle = document.querySelector<HTMLElement>('#auth-mode-subtitle')
+const passwordHint = document.querySelector<HTMLElement>('#password-hint')
 
 const setAuthTab = (mode: 'login' | 'register') => {
   const isLogin = mode === 'login'
@@ -327,6 +463,32 @@ const setAuthTab = (mode: 'login' | 'register') => {
   tabRegister?.setAttribute('aria-selected', String(!isLogin))
   loginBtn.hidden    = !isLogin
   registerBtn.hidden = isLogin
+
+  if (passwordInput) {
+    passwordInput.autocomplete = isLogin ? 'current-password' : 'new-password'
+  }
+
+  if (authModeKicker) {
+    authModeKicker.textContent = isLogin ? 'Welcome back' : 'Create account'
+  }
+
+  if (authModeTitle) {
+    authModeTitle.textContent = isLogin ? 'Sign in to your vault' : 'Create your secure vault'
+  }
+
+  if (authModeSubtitle) {
+    authModeSubtitle.textContent = isLogin
+      ? 'Use your username and password to decrypt and sync your links.'
+      : 'Your credentials derive your vault key. Use something memorable and secure.'
+  }
+
+  if (passwordHint) {
+    passwordHint.textContent = isLogin
+      ? 'Minimum 6 characters.'
+      : 'Choose at least 6 characters. This password unlocks your encrypted vault.'
+  }
+
+  authMessage.textContent = ''
 }
 
 tabLogin?.addEventListener('click',    () => setAuthTab('login'))
@@ -347,20 +509,24 @@ togglePasswordBtn?.addEventListener('click', () => {
 
 // ── App page listeners ────────────────────────────────────────────
 
-// Bookmark animation
-const bookmarkBtn  = document.querySelector<HTMLButtonElement>('#bookmark-anim')
-const bookmarkIcon = bookmarkBtn?.querySelector<HTMLElement>('.bookmark-icon')
-
-const popBookmark = () => {
-  if (!bookmarkIcon) return
-  bookmarkIcon.classList.remove('is-popping')
-  void bookmarkIcon.offsetWidth
-  bookmarkIcon.classList.add('is-popping')
+// Bottom navigation
+const setActiveTab = (tabName: string) => {
+  for (const panel of tabPanels) {
+    panel.classList.toggle('is-active', panel.dataset.tabPanel === tabName)
+  }
+  for (const tab of bottomNav?.querySelectorAll<HTMLButtonElement>('.bottom-nav-tab') ?? []) {
+    tab.classList.toggle('is-active', tab.dataset.tab === tabName)
+  }
 }
 
-bookmarkBtn?.addEventListener('click',      popBookmark)
-bookmarkBtn?.addEventListener('touchstart', popBookmark, { passive: true })
-bookmarkIcon?.addEventListener('animationend', () => bookmarkIcon.classList.remove('is-popping'))
+for (const tab of bottomNav?.querySelectorAll<HTMLButtonElement>('.bottom-nav-tab') ?? []) {
+  tab.addEventListener('click', () => {
+    setActiveTab(tab.dataset.tab ?? 'home')
+    vibrateShort()
+  })
+}
+
+setActiveTab('home')
 
 // ── Action modal ─────────────────────────────────────────────────
 
@@ -379,6 +545,7 @@ const openModal = (panelKey: string) => {
   modalTitle.textContent = meta.title
   actionModal.hidden = false
   document.body.style.overflow = 'hidden'
+  vibrateShort()
   setTimeout(() => panel?.querySelector<HTMLElement>('input')?.focus(), 80)
 }
 
@@ -390,6 +557,43 @@ const closeModal = () => {
 for (const card of appPanel.querySelectorAll<HTMLElement>('[data-opens-panel]')) {
   card.addEventListener('click', () => { openModal(card.dataset.opensPanel ?? '') })
 }
+
+appPanel.addEventListener('click', (event) => {
+  const openCollectionsBtn = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-home-open-collections]')
+  if (openCollectionsBtn) {
+    event.preventDefault()
+    setActiveTab('collections')
+    return
+  }
+
+  const homeGroupBtn = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-home-group-name]')
+  if (homeGroupBtn) {
+    event.preventDefault()
+    const groupId = homeGroupBtn.dataset.homeGroupName ?? ''
+    if (groupId === '__ungrouped') {
+      groupFilter.value = ''
+    } else {
+      const groupName = homeGroupBtn.querySelector<HTMLElement>('.home-group-chip-name')?.textContent ?? ''
+      groupFilter.value = groupName
+    }
+    setActiveTab('collections')
+    renderLinks()
+    return
+  }
+
+  const addBtn = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-home-add]')
+  if (addBtn) {
+    event.preventDefault()
+    openModal('link')
+    return
+  }
+
+  const groupBtn = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-home-group]')
+  if (groupBtn) {
+    event.preventDefault()
+    openModal('group')
+  }
+})
 
 modalCloseBtn.addEventListener('click', closeModal)
 actionModal.addEventListener('click', (e) => { if (e.target === actionModal) closeModal() })
@@ -403,11 +607,62 @@ const setCollectionsView = (mode: 'group' | 'tag') => {
   viewGroupBtn?.classList.toggle('coll-view-tab--active', mode === 'group')
   viewTagBtn?.classList.toggle('coll-view-tab--active',  mode === 'tag')
   viewModeSelect.value = mode
+  setActiveTab('collections')
   renderLinks()
 }
 
 viewGroupBtn?.addEventListener('click', () => setCollectionsView('group'))
 viewTagBtn?.addEventListener('click',   () => setCollectionsView('tag'))
+
+// Swipe-like row actions
+let swipeStartX = 0
+let swipeStartY = 0
+let swipeRow: HTMLElement | null = null
+
+const closeAllRows = () => {
+  for (const row of linkBoard.querySelectorAll<HTMLElement>('.link-row.is-revealed')) {
+    row.classList.remove('is-revealed')
+  }
+}
+
+linkBoard.addEventListener('pointerdown', (event) => {
+  const row = (event.target as HTMLElement).closest<HTMLElement>('[data-swipe-root]')
+  if (!row) return
+  swipeRow = row
+  swipeStartX = event.clientX
+  swipeStartY = event.clientY
+})
+
+linkBoard.addEventListener('pointerup', (event) => {
+  if (!swipeRow) return
+  const dx = event.clientX - swipeStartX
+  const dy = Math.abs(event.clientY - swipeStartY)
+  if (dy > 24) {
+    swipeRow = null
+    return
+  }
+  if (dx < -30) {
+    closeAllRows()
+    swipeRow.classList.add('is-revealed')
+  } else if (dx > 24) {
+    swipeRow.classList.remove('is-revealed')
+  }
+  swipeRow = null
+})
+
+linkBoard.addEventListener('click', (event) => {
+  const emptyAddBtn = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-empty-add]')
+  if (emptyAddBtn) {
+    event.preventDefault()
+    event.stopPropagation()
+    setActiveTab('home')
+    openModal('link')
+    return
+  }
+
+  const row = (event.target as HTMLElement).closest<HTMLElement>('.link-row')
+  if (!row) closeAllRows()
+})
 
 // Bucket toggle
 linkBoard.addEventListener('click', (event) => {
@@ -511,6 +766,7 @@ linkForm.addEventListener('submit', async (event) => {
   tagsInput.value  = ''
   latestMetadata   = null
 
+  vibrateShort()
   saveMessage.textContent = 'Link saved to vault ✓'
   setTimeout(() => { saveMessage.textContent = '' }, 2500)
 })
@@ -526,6 +782,7 @@ groupForm.addEventListener('submit', async (event) => {
   // Pre-fill group in link modal and switch to it
   groupInput.value = name
   groupForm.reset()
+  vibrateShort()
   closeModal()
   openModal('link')
   setTimeout(() => urlInput.focus(), 150)
@@ -535,8 +792,8 @@ groupForm.addEventListener('submit', async (event) => {
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault()
   deferredInstallPrompt = event as InstallPromptEvent
-  installBtn.hidden = false
   landingInstallBtn.hidden = false
+  if (settingsInstallBtn) settingsInstallBtn.hidden = false
 })
 
 landingInstallBtn.addEventListener('click', async () => {
@@ -545,26 +802,26 @@ landingInstallBtn.addEventListener('click', async () => {
   const choice = await deferredInstallPrompt.userChoice
   if (choice.outcome === 'accepted') {
     landingInstallBtn.hidden = true
-    installBtn.hidden = true
+    if (settingsInstallBtn) settingsInstallBtn.hidden = true
   }
   deferredInstallPrompt = null
 })
 
-installBtn.addEventListener('click', async () => {
+settingsInstallBtn?.addEventListener('click', async () => {
   if (!deferredInstallPrompt) return
   await deferredInstallPrompt.prompt()
   const choice = await deferredInstallPrompt.userChoice
   if (choice.outcome === 'accepted') {
-    installBtn.hidden = true
     landingInstallBtn.hidden = true
+    settingsInstallBtn.hidden = true
   }
   deferredInstallPrompt = null
 })
 
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null
-  installBtn.hidden = true
   landingInstallBtn.hidden = true
+  if (settingsInstallBtn) settingsInstallBtn.hidden = true
 })
 
 // Logout — clear session, credential cache, offline mode, and WebRTC connection
@@ -590,15 +847,31 @@ window.addEventListener('online', () => {
     .catch(() => {})
 })
 
-// ── Delete link (event delegation on the board) ───────────────────
+// ── Row actions (event delegation on the board) ───────────────────
 
 linkBoard.addEventListener('click', (e) => {
+  const copyBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-copy-id]')
+  if (copyBtn) {
+    e.preventDefault()
+    e.stopPropagation()
+    const row = copyBtn.closest<HTMLElement>('.link-row')
+    const anchor = row?.querySelector<HTMLAnchorElement>('.link-row-main')
+    const href = anchor?.href
+    if (href) {
+      void navigator.clipboard.writeText(href).catch(() => {})
+      vibrateShort()
+    }
+    closeAllRows()
+    return
+  }
+
   const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-delete-id]')
   if (!btn) return
   e.preventDefault()
   e.stopPropagation()
   const id = btn.dataset.deleteId
   if (!id) return
+  vibrateShort()
   deleteLink(doc, id)
 })
 
@@ -729,8 +1002,18 @@ const boot = async () => {
       attachVaultObservers(doc)
       console.log('[boot] boot: vault switched, doc guid:', doc.guid)
 
-      // Phase 4: connect WebRTC for live P2P sync with other devices logged in as same user
-      const provider = connectSync(`bnkr-vault-${session.username}`, SYNC_URL)
+      const trusted = await ensureTrustedDeviceOrAbort(session.token, identity, true)
+      if (!trusted) {
+        // User cancelled pairing from persisted session flow.
+        return
+      }
+
+      // Phase 4: connect WebRTC for live P2P sync — pass auth so server can verify trust
+      const provider = connectSync(
+        `bnkr-vault-${session.username}`,
+        SYNC_URL,
+        { token: session.token, deviceId: identity.deviceId }
+      )
       provider.on('status', () => syncStatus?.update())
       provider.on('sync',   () => syncStatus?.update())
     }
@@ -773,4 +1056,7 @@ const boot = async () => {
 
 void boot()
 
-window.addEventListener('beforeunload', () => { syncStatus?.cleanup() })
+window.addEventListener('beforeunload', () => {
+  syncStatus?.cleanup()
+  if (greetingRefreshTimer !== null) window.clearTimeout(greetingRefreshTimer)
+})
