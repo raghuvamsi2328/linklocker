@@ -18,6 +18,11 @@ export function renderAppPageHtml(): string {
       </header>
 
       <section class="tab-panel is-active" data-tab-panel="home">
+        <section class="home-hero" aria-label="Welcome">
+          <p class="home-hero-kicker" id="home-hero-kicker">Hi there,</p>
+          <h2 class="home-hero-title">How can I help you today?</h2>
+        </section>
+
         <section id="home-empty-state" class="home-empty" hidden>
           <span class="material-symbols-rounded home-empty-icon" aria-hidden="true">travel_explore</span>
           <h3 class="home-empty-title">Start your vault</h3>
@@ -39,25 +44,55 @@ export function renderAppPageHtml(): string {
             <span class="action-toggle-icon">
               <span class="material-symbols-rounded" aria-hidden="true">add_link</span>
             </span>
-            <span class="action-toggle-label">Add Link</span>
+            <span class="action-toggle-content">
+              <span class="action-toggle-label">Add Link</span>
+              <span class="action-toggle-copy">Save a URL quickly</span>
+            </span>
           </button>
 
           <button type="button" class="action-card" id="backup-card" data-opens-panel="backup">
             <span class="action-toggle-icon action-toggle-icon--sky">
               <span class="material-symbols-rounded" aria-hidden="true">cloud_download</span>
             </span>
-            <span class="action-toggle-label">Backup</span>
+            <span class="action-toggle-content">
+              <span class="action-toggle-label">Backup</span>
+              <span class="action-toggle-copy">Export or import vault</span>
+            </span>
           </button>
 
           <button type="button" class="action-card" id="group-card" data-opens-panel="group">
             <span class="action-toggle-icon action-toggle-icon--purple">
               <span class="material-symbols-rounded" aria-hidden="true">create_new_folder</span>
             </span>
-            <span class="action-toggle-label">New Group</span>
+            <span class="action-toggle-content">
+              <span class="action-toggle-label">New Group</span>
+              <span class="action-toggle-copy">Organize your links</span>
+            </span>
           </button>
         </div>
 
         <section class="home-preview" id="home-preview" hidden>
+          <article class="home-preview-card">
+            <div class="home-preview-head">
+              <h3 class="home-preview-title">Productivity</h3>
+              <button type="button" class="home-preview-link" data-home-open-add>Open tools</button>
+            </div>
+            <div class="home-productivity-wrap">
+              <div class="home-productivity-block">
+                <p class="home-productivity-label">Todos</p>
+                <div id="home-todo-preview"></div>
+              </div>
+              <div class="home-productivity-block">
+                <p class="home-productivity-label">Running Timers</p>
+                <div id="home-running-timers-preview"></div>
+              </div>
+              <div class="home-productivity-block">
+                <p class="home-productivity-label">Running Countdowns</p>
+                <div id="home-running-countdowns-preview"></div>
+              </div>
+            </div>
+          </article>
+
           <article class="home-preview-card">
             <div class="home-preview-head">
               <h3 class="home-preview-title">Continue Reading</h3>
@@ -123,6 +158,46 @@ export function renderAppPageHtml(): string {
             <span class="action-toggle-label">Create Group</span>
           </button>
         </div>
+        <section class="productivity-grid">
+          <article class="productivity-card">
+            <h3 class="productivity-title">
+              <span class="material-symbols-rounded" aria-hidden="true">timer</span>
+              Timer
+            </h3>
+            <div class="todo-compose">
+              <input id="timer-minutes" type="number" class="action-input" min="0" step="0.5" placeholder="Minutes" />
+              <button id="timer-add-btn" type="button" class="action-btn action-btn--primary">Add</button>
+            </div>
+            <p id="timer-empty" class="productivity-muted">No timers yet.</p>
+            <ul id="timer-list" class="todo-list" aria-live="polite"></ul>
+          </article>
+
+          <article class="productivity-card">
+            <h3 class="productivity-title">
+              <span class="material-symbols-rounded" aria-hidden="true">hourglass_bottom</span>
+              Countdown
+            </h3>
+            <div class="todo-compose">
+              <input id="countdown-target" type="datetime-local" class="action-input" />
+              <button id="countdown-add-btn" type="button" class="action-btn action-btn--primary">Add</button>
+            </div>
+            <p id="countdown-empty" class="productivity-muted">No countdowns yet.</p>
+            <ul id="countdown-list" class="todo-list" aria-live="polite"></ul>
+          </article>
+
+          <article class="productivity-card">
+            <h3 class="productivity-title">
+              <span class="material-symbols-rounded" aria-hidden="true">checklist</span>
+              Todos
+            </h3>
+            <div class="todo-compose">
+              <input id="todo-input" type="text" class="action-input" placeholder="Add a task" maxlength="120" />
+              <button id="todo-add-btn" type="button" class="action-btn action-btn--primary">Add</button>
+            </div>
+            <p id="todo-empty" class="productivity-muted">No tasks yet.</p>
+            <ul id="todo-list" class="todo-list" aria-live="polite"></ul>
+          </article>
+        </section>
       </section>
 
       <section class="tab-panel" data-tab-panel="collections">
@@ -167,6 +242,21 @@ export function renderAppPageHtml(): string {
             <span class="material-symbols-rounded" aria-hidden="true">download</span>
             Install App
           </button>
+        </div>
+
+        <div class="settings-card">
+          <article class="productivity-card">
+            <h3 class="productivity-title">
+              <span class="material-symbols-rounded" aria-hidden="true">notifications</span>
+              Notifications
+            </h3>
+            <p id="notif-status" class="productivity-muted">Notifications not enabled yet.</p>
+            <p id="notif-hint" class="productivity-muted"></p>
+            <div class="productivity-actions">
+              <button id="notif-enable-btn" type="button" class="action-btn action-btn--primary">Enable Notifications</button>
+              <button id="notif-test-btn" type="button" class="action-btn action-btn--ghost">Test</button>
+            </div>
+          </article>
         </div>
       </section>
 

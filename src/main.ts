@@ -42,6 +42,7 @@ import {
   type AppSession
 } from './features/sessionMode'
 import { applyPendingSharedPayloadToForm } from './features/uiState'
+import { initProductivityFeature } from './features/productivity'
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -229,10 +230,45 @@ let latestMetadata: { url: string; description: string; image: string; favicon: 
 let syncStatus: { cleanup: () => void; update: () => void } | null = null
 let currentGreetingUser: string | null = null
 let greetingRefreshTimer: number | null = null
+let hapticAudioContext: AudioContext | null = null
+
+const playFallbackTapFeedback = () => {
+  const AudioCtx = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  if (!AudioCtx) return
+
+  hapticAudioContext ??= new AudioCtx()
+  const ctx = hapticAudioContext
+
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => {})
+  }
+
+  const now = ctx.currentTime
+  const oscillator = ctx.createOscillator()
+  const gain = ctx.createGain()
+
+  oscillator.type = 'triangle'
+  oscillator.frequency.setValueAtTime(160, now)
+  gain.gain.setValueAtTime(0.0001, now)
+  gain.gain.exponentialRampToValueAtTime(0.0015, now + 0.005)
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.03)
+
+  oscillator.connect(gain)
+  gain.connect(ctx.destination)
+  oscillator.start(now)
+  oscillator.stop(now + 0.03)
+}
 
 const vibrateShort = () => {
-  if ('vibrate' in navigator) navigator.vibrate(10)
+  if ('vibrate' in navigator && typeof navigator.vibrate === 'function') {
+    const didVibrate = navigator.vibrate(10)
+    if (didVibrate) return
+  }
+
+  playFallbackTapFeedback()
 }
+
+initProductivityFeature({ vibrate: vibrateShort })
 
 // ── Time-based greeting ─────────────────────────────────────────
 
@@ -351,6 +387,12 @@ const updateGreeting = (username: string | null) => {
   if (el) {
     el.textContent = getGreetingText(username)
   }
+
+  const heroKicker = document.querySelector<HTMLElement>('#home-hero-kicker')
+  if (heroKicker) {
+    const trimmedName = (username ?? '').trim()
+    heroKicker.textContent = trimmedName ? `Hi ${trimmedName},` : 'Hi there,'
+  }
 }
 
 const scheduleGreetingRefresh = () => {
@@ -468,7 +510,7 @@ const renderLinks = () => {
 
     if (homeEmptyState) homeEmptyState.hidden = !isEmptyVault
     if (homeQuickActions) homeQuickActions.hidden = isEmptyVault
-    if (homePreview) homePreview.hidden = isEmptyVault
+    if (homePreview) homePreview.hidden = false
     if (homeQuote) homeQuote.hidden = isEmptyVault
 
     const visitScope = session?.username ?? getStoredOfflineDisplayName() ?? 'offline'
@@ -802,6 +844,13 @@ appPanel.addEventListener('click', (event) => {
     tagFilter.value = ''    // Clear tag filter as well
     setActiveTab('collections')
     renderLinks()
+    return
+  }
+
+  const openAddToolsBtn = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-home-open-add]')
+  if (openAddToolsBtn) {
+    event.preventDefault()
+    setActiveTab('add')
     return
   }
 
